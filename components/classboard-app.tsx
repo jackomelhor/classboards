@@ -162,6 +162,21 @@ async function uploadAttachment(file: File, userId: string) {
   };
 }
 
+function createLocalSession(name: string): Session {
+  return {
+    access_token: "local-access-token",
+    refresh_token: "local-refresh-token",
+    expires_in: 60 * 60 * 24,
+    token_type: "bearer",
+    user: {
+      id: "local-user",
+      aud: "authenticated",
+      app_metadata: {},
+      user_metadata: { full_name: name || "Usuário" },
+      created_at: new Date().toISOString(),
+    },
+  } as unknown as Session;
+}
 export function ClassBoardApp() {
   const localMode = !isSupabaseConfigured || !supabase;
 
@@ -371,14 +386,9 @@ export function ClassBoardApp() {
 
     try {
       if (localMode) {
-        setSession({
-          user: {
-            id: "local-user",
-            user_metadata: { full_name: fullName || "Usuário" },
-          },
-        } as Session);
-        return;
-      }
+  setSession(createLocalSession(fullName));
+  return;
+}
 
       const client = supabase;
       if (!client) {
