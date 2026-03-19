@@ -2,19 +2,19 @@
 
 Web app em **Next.js + TypeScript + Tailwind + Supabase**.
 
-Este pacote já inclui:
+Este pacote inclui:
 
 - autenticação por email e senha
+- tela de configuração inicial após o login
 - dashboard escolar
-- criação de tarefas
+- criação, edição e exclusão de tarefas
 - checklist por tarefa
 - prioridade
 - calendário semanal
-- painel da turma
+- configuração da turma
 - convite por link
 - anexo em tarefa usando Supabase Storage
 - lembrete local por notificação do navegador
-- modo demonstração, para abrir o app mesmo antes de configurar o banco
 
 ---
 
@@ -49,8 +49,6 @@ Abra:
 ```bash
 http://localhost:3000
 ```
-
-Se você ainda não tiver configurado o Supabase, o projeto abre em **modo demonstração**.
 
 ---
 
@@ -110,8 +108,6 @@ Depois de preencher o `.env.local`, rode novamente:
 npm run dev
 ```
 
-Agora o login deixa de ser demo e passa a usar o Supabase de verdade.
-
 ---
 
 ## 4) Como o app está organizado
@@ -133,21 +129,21 @@ supabase/
 ### Estrutura principal
 
 - `app/page.tsx`: entrada do app
-- `components/classboard-app.tsx`: tela principal, autenticação e navegação
-- `components/task-form.tsx`: modal para nova tarefa
+- `components/classboard-app.tsx`: autenticação, configuração inicial, dashboard e navegação
+- `components/task-form.tsx`: modal para criar e editar tarefa
 - `app/join/[inviteCode]/page.tsx`: rota para entrar via convite
 - `lib/supabase/client.ts`: conexão com Supabase
 - `supabase/schema.sql`: banco de dados, RLS e bucket
 
 ---
 
-## 5) Fluxo do produto já implementado
+## 5) Fluxo já implementado
 
 ### Fase 1
 
 - criar conta
 - entrar no app
-- criar workspace inicial
+- preencher escola, turma e tipo do espaço
 - ver painel
 - criar tarefas
 - acompanhar tarefas no dashboard
@@ -160,17 +156,14 @@ supabase/
 - checklist
 - progresso da tarefa
 - anexo
+- edição e exclusão de tarefas
 - notificação local no navegador
-
-> Observação importante: a notificação implementada nesta versão é de **lembrança local ao abrir o painel**. Agendamento de email ou envio automático em horário exato fica como próxima evolução.
 
 ---
 
 ## 6) Como subir para a web na Vercel
 
-### Opção mais simples: GitHub + Vercel
-
-#### 1. subir para o GitHub
+### 1. subir para o GitHub
 
 Dentro da pasta do projeto:
 
@@ -188,7 +181,7 @@ git branch -M main
 git push -u origin main
 ```
 
-#### 2. importar na Vercel
+### 2. importar na Vercel
 
 1. Entre na Vercel.
 2. Clique em **Add New > Project**.
@@ -196,7 +189,7 @@ git push -u origin main
 4. Importe o repositório.
 5. A Vercel detecta automaticamente que é um projeto Next.js.
 
-#### 3. adicionar variáveis de ambiente
+### 3. adicionar variáveis de ambiente
 
 Na Vercel, adicione estas variáveis:
 
@@ -205,99 +198,62 @@ Na Vercel, adicione estas variáveis:
 
 Depois faça um novo deploy.
 
-#### 4. compartilhar com testers
+### 4. compartilhar com testers
 
 Após o deploy, a Vercel gera uma URL pública. Você pode enviar essa URL diretamente para seus testers.
 
 ---
 
-## 7) Como fazer testes com outras pessoas
+## 7) Como atualizar o app
 
-### Fluxo recomendado
+### Atualizar no computador
 
-1. Você cria sua conta.
-2. O app cria um workspace inicial.
-3. No painel da turma, copie o link de convite.
-4. Envie esse link para os testers.
-5. O tester cria a própria conta.
-6. O tester entra no link de convite e se adiciona à turma.
+Faça as mudanças nos arquivos.
 
----
-
-## 8) Próximas melhorias que valem a pena
-
-### Alta prioridade
-
-- tela real de gerenciamento de membros
-- múltiplos workspaces por usuário
-- planos pagos
-- bloqueio por assinatura
-- filtros mais avançados
-- dashboard do dono da turma
-
-### Depois
-
-- email reminders automáticos
-- notificações agendadas
-- grupos internos
-- visão mensal do calendário
-- edição e exclusão de tarefas
-- analytics de produtividade
-
----
-
-## 9) Dicas para não se perder
-
-### Primeiro valide isto
-
-- o login funciona
-- as tarefas são criadas
-- o checklist atualiza
-- o link de convite funciona
-- os testers conseguem entrar
-
-### Só depois avance para
-
-- pagamentos
-- planos
-- cancelamento com bloqueio
-- regras comerciais
-
-Esse é o ponto mais importante do projeto. Antes de monetizar, valide que a turma realmente usa.
-
----
-
-## 10) Comandos úteis
-
-### desenvolvimento
+Depois rode:
 
 ```bash
-npm run dev
+git add .
+git commit -m "Atualiza onboarding e edição de tarefas"
+git push origin main
 ```
 
-### build de produção
+### Atualizar na Vercel
 
-```bash
-npm run build
-```
+Se o projeto já está conectado ao GitHub, a Vercel gera um novo deploy automaticamente depois do `git push`.
 
-### rodar produção local
+### Quando precisa redeploy manual
 
-```bash
-npm run start
-```
+Você normalmente precisa redeployar manualmente quando:
+
+- altera variáveis de ambiente
+- muda algo no Supabase e quer testar uma nova build
 
 ---
 
-## 11) Observação final
+## 8) Importante sobre contas antigas
 
-Este projeto foi montado para ser **bonito o suficiente para mostrar**, mas também **simples o suficiente para você entender e evoluir**.
+As contas criadas na versão anterior podem já ter uma turma e tarefas salvas no banco.
 
-A escolha mais madura aqui foi não misturar agora:
+Nesta versão nova:
 
-- cobrança
-- múltiplos planos completos
-- backend extra
-- regras comerciais complexas
+- novos usuários entram sem tarefas pré-definidas
+- o primeiro acesso pede escola, turma e tipo do espaço
+- tudo fica editável
 
-Primeiro valide o uso real da turma. Isso te poupa retrabalho.
+Se quiser limpar dados antigos de teste, apague as tarefas e o workspace no Supabase ou use uma conta nova.
+
+---
+
+## 9) Dicas de teste
+
+Valide nesta ordem:
+
+1. criar conta
+2. entrar
+3. preencher escola e turma
+4. criar tarefa
+5. editar tarefa
+6. excluir tarefa
+7. copiar link de convite
+8. abrir no celular

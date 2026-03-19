@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { CalendarDays, FileUp, ListChecks, Save, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { CalendarDays, FileUp, ListChecks, Save, Trash2, X } from "lucide-react";
 import type { TaskFormValues } from "@/lib/types";
 
 const initialValues: TaskFormValues = {
@@ -21,26 +21,48 @@ type TaskFormProps = {
   onClose: () => void;
   onSubmit: (values: TaskFormValues) => Promise<void> | void;
   submitting: boolean;
+  initialValues?: TaskFormValues | null;
+  mode?: "create" | "edit";
+  onDelete?: (() => Promise<void> | void) | null;
+  deleting?: boolean;
 };
 
-export function TaskForm({ open, onClose, onSubmit, submitting }: TaskFormProps) {
+export function TaskForm({
+  open,
+  onClose,
+  onSubmit,
+  submitting,
+  initialValues: initialValuesProp,
+  mode = "create",
+  onDelete,
+  deleting = false,
+}: TaskFormProps) {
   const [values, setValues] = useState<TaskFormValues>(initialValues);
 
+  const mergedInitialValues = useMemo(
+    () => ({
+      ...initialValues,
+      ...(initialValuesProp ?? {}),
+    }),
+    [initialValuesProp]
+  );
+
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      setValues(mergedInitialValues);
+    } else {
       setValues(initialValues);
     }
-  }, [open]);
+  }, [open, mergedInitialValues]);
 
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-2xl rounded-[28px] bg-white shadow-panel border border-slate-200 overflow-hidden">
+      <div className="w-full max-w-2xl rounded-[28px] border border-slate-200 bg-white shadow-panel overflow-hidden">
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">Nova tarefa</h2>
-            <p className="text-sm text-slate-500 mt-1">Fases 1 e 2 juntas: tarefa, prioridade, checklist e anexo.</p>
+            <h2 className="text-2xl font-bold text-slate-900">{mode === "edit" ? "Editar tarefa" : "Nova tarefa"}</h2>
           </div>
           <button
             type="button"
@@ -170,8 +192,8 @@ export function TaskForm({ open, onClose, onSubmit, submitting }: TaskFormProps)
                     <FileUp className="h-5 w-5" />
                   </div>
                   <div>
-                    <p className="font-medium">PDF, imagem, documento ou slide</p>
-                    <p className="text-sm text-slate-500">Opcional. Será salvo no bucket task-files do Supabase.</p>
+                    <p className="font-medium">Selecionar arquivo</p>
+                    <p className="text-sm text-slate-500">Opcional</p>
                   </div>
                 </div>
                 <input
@@ -183,22 +205,39 @@ export function TaskForm({ open, onClose, onSubmit, submitting }: TaskFormProps)
             </div>
           </label>
 
-          <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-end">
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200 px-5 font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              <Save className="h-4 w-4" />
-              {submitting ? "Salvando..." : "Salvar tarefa"}
-            </button>
+          <div className="flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-between">
+            <div>
+              {mode === "edit" && onDelete ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await onDelete();
+                  }}
+                  disabled={deleting || submitting}
+                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-red-200 px-5 font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {deleting ? "Excluindo..." : "Excluir"}
+                </button>
+              ) : null}
+            </div>
+            <div className="flex flex-col-reverse gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200 px-5 font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={submitting || deleting}
+                className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                <Save className="h-4 w-4" />
+                {submitting ? "Salvando..." : mode === "edit" ? "Salvar alterações" : "Salvar tarefa"}
+              </button>
+            </div>
           </div>
         </form>
       </div>
