@@ -8,7 +8,6 @@ import {
   BookOpen,
   CalendarDays,
   CheckCircle2,
-  ChevronRight,
   ClipboardList,
   Copy,
   Home,
@@ -20,11 +19,18 @@ import {
   Plus,
   Search,
   Settings,
-  Trash2,
   Users,
 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase/client";
-import type { ChecklistItem, Priority, Task, TaskFormValues, TaskStatus, TaskType, Workspace } from "@/lib/types";
+import type {
+  ChecklistItem,
+  Priority,
+  Task,
+  TaskFormValues,
+  TaskStatus,
+  TaskType,
+  Workspace,
+} from "@/lib/types";
 import { TaskForm } from "@/components/task-form";
 
 type Screen = "dashboard" | "tasks" | "calendar" | "workspace";
@@ -139,12 +145,17 @@ function taskToFormValues(task: Task): TaskFormValues {
 }
 
 async function uploadAttachment(file: File, userId: string) {
-  if (!supabase) return { attachment_name: null, attachment_url: null };
+  const client = supabase;
+  if (!client) {
+    return { attachment_name: null, attachment_url: null };
+  }
+
   const safeName = file.name.replace(/\s+/g, "-");
   const path = `${userId}/${crypto.randomUUID()}-${safeName}`;
-  const { error } = await supabase.storage.from("task-files").upload(path, file, { upsert: false });
+  const { error } = await client.storage.from("task-files").upload(path, file, { upsert: false });
   if (error) throw error;
-  const { data } = supabase.storage.from("task-files").getPublicUrl(path);
+
+  const { data } = client.storage.from("task-files").getPublicUrl(path);
   return {
     attachment_name: file.name,
     attachment_url: data.publicUrl,
@@ -153,6 +164,7 @@ async function uploadAttachment(file: File, userId: string) {
 
 export function ClassBoardApp() {
   const localMode = !isSupabaseConfigured || !supabase;
+
   const [session, setSession] = useState<Session | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [screen, setScreen] = useState<Screen>("dashboard");
@@ -180,19 +192,21 @@ export function ClassBoardApp() {
   );
 
   useEffect(() => {
-    if (localMode) {
+    if (localMode || !supabase) {
       setLoadingAuth(false);
       return;
     }
 
-    void supabase.auth.getSession().then(({ data }) => {
+    const client = supabase;
+
+    void client.auth.getSession().then(({ data }) => {
       setSession(data.session ?? null);
       setLoadingAuth(false);
     });
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+    } = client.auth.onAuthStateChange((_event, currentSession) => {
       setSession(currentSession ?? null);
       setLoadingAuth(false);
     });
@@ -204,17 +218,21 @@ export function ClassBoardApp() {
 
   useEffect(() => {
     if (localMode) return;
+
     if (!session?.user) {
       setWorkspace(null);
       setTasks([]);
       setWorkspaceForm(emptyWorkspaceForm);
       return;
     }
+
     void bootstrapWorkspace(session.user);
   }, [localMode, session?.user?.id]);
 
   useEffect(() => {
-    setNotificationPermission(typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported");
+    setNotificationPermission(
+      typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
+    );
   }, []);
 
   useEffect(() => {
@@ -232,30 +250,43 @@ export function ClassBoardApp() {
     new Notification("ClassBoard", {
       body: `${task.title} • ${humanDueLabel(task.due_date)}`,
     });
+
     if (typeof window !== "undefined") {
       window.sessionStorage.setItem(cacheKey, "1");
     }
   }, [notificationPermission, tasks]);
 
   const todayTasks = useMemo(() => tasks.filter((task) => diffInDays(task.due_date) === 0), [tasks]);
-  const upcomingTests = useMemo(() => tasks.filter((task) => task.task_type === "prova" && task.status !== "concluida").slice(0, 2), [tasks]);
+
+  const upcomingTests = useMemo(
+    () => tasks.filter((task) => task.task_type === "prova" && task.status !== "concluida").slice(0, 2),
+    [tasks]
+  );
+
   const pendingTasks = useMemo(
     () => tasks.filter((task) => task.task_type !== "prova" && task.status !== "concluida").slice(0, 2),
     [tasks]
   );
+
   const doneCount = useMemo(() => tasks.filter((task) => task.status === "concluida").length, [tasks]);
   const pendingCount = useMemo(() => tasks.filter((task) => task.status !== "concluida").length, [tasks]);
+
   const weeklyCalendar = useMemo(() => {
     const weekStart = startOfWeek();
+
     return Array.from({ length: 5 }).map((_, index) => {
       const current = new Date(weekStart);
       current.setDate(weekStart.getDate() + index);
       const iso = current.toISOString().slice(0, 10);
       const items = tasks.filter((task) => task.due_date === iso);
-      const dayLabel = new Intl.DateTimeFormat("pt-BR", { weekday: "short" }).format(current).replace(".", "");
+      const dayLabel = new Intl.DateTimeFormat("pt-BR", { weekday: "short" })
+        .format(current)
+        .replace(".", "");
+
       return { iso, dayLabel, items };
     });
   }, [tasks]);
+
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
       const matchesSearch = `${task.title} ${task.subject}`.toLowerCase().includes(search.toLowerCase());
@@ -268,12 +299,14 @@ export function ClassBoardApp() {
   }, [tasks, search, taskFilter]);
 
   async function bootstrapWorkspace(user: User) {
-    if (!supabase) return;
+    const client = supabase;
+    if (!client) return;
+
     setLoadingData(true);
     setErrorMessage(null);
 
     try {
-      const membershipQuery = await supabase
+      const membershipQuery = await client
         .from("workspace_members")
         .select("workspace_id, role, workspaces(*)")
         .eq("user_id", user.id)
@@ -282,6 +315,7 @@ export function ClassBoardApp() {
       if (membershipQuery.error) throw membershipQuery.error;
 
       const row = membershipQuery.data?.[0] as WorkspaceMembershipQuery | undefined;
+
       if (!row) {
         setWorkspace(null);
         setTasks([]);
@@ -292,6 +326,7 @@ export function ClassBoardApp() {
 
       const currentWorkspace = Array.isArray(row.workspaces) ? row.workspaces[0] : row.workspaces;
       setWorkspace(currentWorkspace ?? null);
+
       if (currentWorkspace) {
         setWorkspaceForm(workspaceToFormValues(currentWorkspace));
         await loadTasks(currentWorkspace.id);
@@ -305,19 +340,25 @@ export function ClassBoardApp() {
   }
 
   async function loadTasks(workspaceId: string) {
-    if (!supabase) return;
-    const query = await supabase
+    const client = supabase;
+    if (!client) return;
+
+    const query = await client
       .from("tasks")
       .select("*, checklist_items(*)")
       .eq("workspace_id", workspaceId)
       .order("due_date", { ascending: true });
 
     if (query.error) throw query.error;
+
     const records = (query.data ?? []) as Task[];
+
     setTasks(
       records.map((task) => ({
         ...task,
-        checklist_items: [...(task.checklist_items ?? [])].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? "")),
+        checklist_items: [...(task.checklist_items ?? [])].sort((a, b) =>
+          (a.created_at ?? "").localeCompare(b.created_at ?? "")
+        ),
       }))
     );
   }
@@ -330,12 +371,22 @@ export function ClassBoardApp() {
 
     try {
       if (localMode) {
-        setSession({ user: { id: "local-user", user_metadata: { full_name: fullName || "Usuário" } } } as Session);
+        setSession({
+          user: {
+            id: "local-user",
+            user_metadata: { full_name: fullName || "Usuário" },
+          },
+        } as Session);
         return;
       }
 
+      const client = supabase;
+      if (!client) {
+        throw new Error("Supabase não configurado.");
+      }
+
       if (authMode === "signup") {
-        const response = await supabase.auth.signUp({
+        const response = await client.auth.signUp({
           email,
           password,
           options: {
@@ -344,14 +395,16 @@ export function ClassBoardApp() {
             },
           },
         });
+
         if (response.error) throw response.error;
+
         if (response.data.session) {
           setSession(response.data.session);
         } else {
           setMessage("Conta criada. Confirme o email se essa opção estiver ativa no Supabase.");
         }
       } else {
-        const response = await supabase.auth.signInWithPassword({ email, password });
+        const response = await client.auth.signInWithPassword({ email, password });
         if (response.error) throw response.error;
       }
     } catch (error) {
@@ -365,6 +418,7 @@ export function ClassBoardApp() {
   async function handleSignOut() {
     setMessage(null);
     setErrorMessage(null);
+
     if (localMode) {
       setSession(null);
       setWorkspace(null);
@@ -372,7 +426,14 @@ export function ClassBoardApp() {
       setWorkspaceForm(emptyWorkspaceForm);
       return;
     }
-    await supabase.auth.signOut();
+
+    const client = supabase;
+    if (!client) {
+      setErrorMessage("Supabase não configurado.");
+      return;
+    }
+
+    await client.auth.signOut();
     setWorkspace(null);
     setTasks([]);
     setWorkspaceForm(emptyWorkspaceForm);
@@ -403,16 +464,21 @@ export function ClassBoardApp() {
           invite_code: workspace?.invite_code ?? Math.random().toString(36).slice(2, 10).toUpperCase(),
           ...payload,
         } as Workspace;
+
         setWorkspace(nextWorkspace);
         setScreen("dashboard");
         return;
       }
 
+      const client = supabase;
       const currentUserId = session?.user?.id;
-      if (!currentUserId || !supabase) throw new Error("Sessão não encontrada.");
+
+      if (!currentUserId || !client) {
+        throw new Error("Sessão não encontrada.");
+      }
 
       if (!workspace) {
-        const insertedWorkspace = await supabase
+        const insertedWorkspace = await client
           .from("workspaces")
           .insert({
             owner_id: currentUserId,
@@ -423,7 +489,7 @@ export function ClassBoardApp() {
 
         if (insertedWorkspace.error) throw insertedWorkspace.error;
 
-        const insertedMembership = await supabase.from("workspace_members").insert({
+        const insertedMembership = await client.from("workspace_members").insert({
           workspace_id: insertedWorkspace.data.id,
           user_id: currentUserId,
           role: "owner",
@@ -435,7 +501,7 @@ export function ClassBoardApp() {
         setWorkspaceForm(workspaceToFormValues(insertedWorkspace.data as Workspace));
         setTasks([]);
       } else {
-        const updatedWorkspace = await supabase
+        const updatedWorkspace = await client
           .from("workspaces")
           .update(payload)
           .eq("id", workspace.id)
@@ -443,6 +509,7 @@ export function ClassBoardApp() {
           .single();
 
         if (updatedWorkspace.error) throw updatedWorkspace.error;
+
         setWorkspace(updatedWorkspace.data as Workspace);
         setWorkspaceForm(workspaceToFormValues(updatedWorkspace.data as Workspace));
       }
@@ -471,12 +538,15 @@ export function ClassBoardApp() {
 
   async function handleTaskSubmit(values: TaskFormValues) {
     if (!workspace) return;
+
     setSavingTask(true);
     setErrorMessage(null);
     setMessage(null);
 
     try {
-      const attachment = values.file && session?.user?.id && !localMode ? await uploadAttachment(values.file, session.user.id) : null;
+      const attachment =
+        values.file && session?.user?.id && !localMode ? await uploadAttachment(values.file, session.user.id) : null;
+
       const checklistLines = values.checklistRaw
         .split("\n")
         .map((line) => line.trim())
@@ -484,8 +554,10 @@ export function ClassBoardApp() {
 
       if (taskFormMode === "create") {
         if (localMode || !supabase || !session?.user) {
+          const newTaskId = crypto.randomUUID();
+
           const newTask: Task = {
-            id: crypto.randomUUID(),
+            id: newTaskId,
             workspace_id: workspace.id,
             author_id: session?.user?.id ?? "local-user",
             title: values.title,
@@ -499,14 +571,17 @@ export function ClassBoardApp() {
             attachment_url: null,
             checklist_items: checklistLines.map((content) => ({
               id: crypto.randomUUID(),
-              task_id: crypto.randomUUID(),
+              task_id: newTaskId,
               content,
               is_done: false,
             })),
           };
+
           setTasks((prev) => [...prev, newTask].sort((a, b) => a.due_date.localeCompare(b.due_date)));
         } else {
-          const insertedTask = await supabase
+          const client = supabase;
+
+          const insertedTask = await client
             .from("tasks")
             .insert({
               workspace_id: workspace.id,
@@ -527,13 +602,14 @@ export function ClassBoardApp() {
           if (insertedTask.error) throw insertedTask.error;
 
           if (checklistLines.length) {
-            const insertChecklist = await supabase.from("checklist_items").insert(
+            const insertChecklist = await client.from("checklist_items").insert(
               checklistLines.map((content) => ({
                 task_id: insertedTask.data.id,
                 content,
                 is_done: false,
               }))
             );
+
             if (insertChecklist.error) throw insertChecklist.error;
           }
 
@@ -567,7 +643,9 @@ export function ClassBoardApp() {
               .sort((a, b) => a.due_date.localeCompare(b.due_date))
           );
         } else {
-          const updateTask = await supabase
+          const client = supabase;
+
+          const updateTask = await client
             .from("tasks")
             .update({
               title: values.title,
@@ -584,17 +662,18 @@ export function ClassBoardApp() {
 
           if (updateTask.error) throw updateTask.error;
 
-          const deleteChecklist = await supabase.from("checklist_items").delete().eq("task_id", selectedTask.id);
+          const deleteChecklist = await client.from("checklist_items").delete().eq("task_id", selectedTask.id);
           if (deleteChecklist.error) throw deleteChecklist.error;
 
           if (checklistLines.length) {
-            const insertChecklist = await supabase.from("checklist_items").insert(
+            const insertChecklist = await client.from("checklist_items").insert(
               checklistLines.map((content) => ({
                 task_id: selectedTask.id,
                 content,
                 is_done: false,
               }))
             );
+
             if (insertChecklist.error) throw insertChecklist.error;
           }
 
@@ -615,6 +694,7 @@ export function ClassBoardApp() {
 
   async function handleDeleteTask() {
     if (!selectedTask) return;
+
     setDeletingTask(true);
     setErrorMessage(null);
     setMessage(null);
@@ -623,12 +703,15 @@ export function ClassBoardApp() {
       if (localMode || !supabase) {
         setTasks((prev) => prev.filter((task) => task.id !== selectedTask.id));
       } else {
-        const deleteTask = await supabase.from("tasks").delete().eq("id", selectedTask.id);
+        const client = supabase;
+        const deleteTask = await client.from("tasks").delete().eq("id", selectedTask.id);
         if (deleteTask.error) throw deleteTask.error;
+
         if (workspace) {
           await loadTasks(workspace.id);
         }
       }
+
       setShowTaskForm(false);
       setSelectedTask(null);
       setMessage("Tarefa excluída.");
@@ -645,7 +728,9 @@ export function ClassBoardApp() {
       const updatedItems = task.checklist_items.map((current) =>
         current.id === item.id ? { ...current, is_done: !current.is_done } : current
       );
-      const nextStatus: TaskStatus = updatedItems.length > 0 && updatedItems.every((entry) => entry.is_done) ? "concluida" : "em_andamento";
+
+      const nextStatus: TaskStatus =
+        updatedItems.length > 0 && updatedItems.every((entry) => entry.is_done) ? "concluida" : "em_andamento";
 
       if (localMode || !supabase) {
         setTasks((prev) =>
@@ -662,10 +747,16 @@ export function ClassBoardApp() {
         return;
       }
 
-      const checklistUpdate = await supabase.from("checklist_items").update({ is_done: !item.is_done }).eq("id", item.id);
+      const client = supabase;
+
+      const checklistUpdate = await client
+        .from("checklist_items")
+        .update({ is_done: !item.is_done })
+        .eq("id", item.id);
+
       if (checklistUpdate.error) throw checklistUpdate.error;
 
-      const taskUpdate = await supabase.from("tasks").update({ status: nextStatus }).eq("id", task.id);
+      const taskUpdate = await client.from("tasks").update({ status: nextStatus }).eq("id", task.id);
       if (taskUpdate.error) throw taskUpdate.error;
 
       setTasks((prev) =>
@@ -690,12 +781,14 @@ export function ClassBoardApp() {
       setNotificationPermission("unsupported");
       return;
     }
+
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
   }
 
   async function copyInviteLink() {
     if (!workspace) return;
+
     const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
     const link = `${origin}/join/${workspace.invite_code}`;
     await navigator.clipboard.writeText(link);
@@ -722,6 +815,7 @@ export function ClassBoardApp() {
               <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-600 shadow-lg shadow-brand-950/40">
                 <BookOpen className="h-5 w-5" />
               </div>
+
               <div className="space-y-3">
                 <button
                   type="button"
@@ -732,11 +826,14 @@ export function ClassBoardApp() {
                 >
                   <Mail className="h-4 w-4" /> Entrar
                 </button>
+
                 <button
                   type="button"
                   onClick={() => setAuthMode("signup")}
                   className={`flex w-full items-center gap-3 rounded-2xl px-4 py-4 text-left transition ${
-                    authMode === "signup" ? "bg-brand-600 text-white shadow-lg shadow-brand-950/40" : "text-slate-300 hover:bg-white/5"
+                    authMode === "signup"
+                      ? "bg-brand-600 text-white shadow-lg shadow-brand-950/40"
+                      : "text-slate-300 hover:bg-white/5"
                   }`}
                 >
                   <Users className="h-4 w-4" /> Criar conta
@@ -751,6 +848,7 @@ export function ClassBoardApp() {
                 <div className="inline-flex w-fit items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm backdrop-blur">
                   <BookOpen className="h-4 w-4" /> ClassBoard
                 </div>
+
                 <div className="max-w-xl space-y-4">
                   <h1 className="text-4xl font-bold leading-tight md:text-5xl">Organização escolar</h1>
                 </div>
@@ -780,6 +878,7 @@ export function ClassBoardApp() {
                     />
                   </div>
                 )}
+
                 <div className="space-y-2">
                   <label className="text-sm text-slate-300">Email</label>
                   <input
@@ -791,6 +890,7 @@ export function ClassBoardApp() {
                     placeholder="joao@email.com"
                   />
                 </div>
+
                 <div className="space-y-2">
                   <label className="text-sm text-slate-300">Senha</label>
                   <input
@@ -828,6 +928,7 @@ export function ClassBoardApp() {
               <div>
                 <h2 className="mt-1 text-3xl font-bold">Entrar</h2>
               </div>
+
               <form className="space-y-4" onSubmit={handleAuthSubmit}>
                 <div className="space-y-2">
                   <label className="text-sm text-slate-300">Nome</label>
@@ -838,6 +939,7 @@ export function ClassBoardApp() {
                     placeholder="Seu nome"
                   />
                 </div>
+
                 <button
                   type="submit"
                   disabled={submittingAuth}
@@ -881,10 +983,30 @@ export function ClassBoardApp() {
           </div>
 
           <nav className="space-y-2">
-            <SidebarButton active={screen === "dashboard"} label="Painel" icon={<Home className="h-5 w-5" />} onClick={() => setScreen("dashboard")} />
-            <SidebarButton active={screen === "tasks"} label="Tarefas" icon={<ClipboardList className="h-5 w-5" />} onClick={() => setScreen("tasks")} />
-            <SidebarButton active={screen === "calendar"} label="Calendário" icon={<CalendarDays className="h-5 w-5" />} onClick={() => setScreen("calendar")} />
-            <SidebarButton active={screen === "workspace"} label="Configurar" icon={<Settings className="h-5 w-5" />} onClick={() => setScreen("workspace")} />
+            <SidebarButton
+              active={screen === "dashboard"}
+              label="Painel"
+              icon={<Home className="h-5 w-5" />}
+              onClick={() => setScreen("dashboard")}
+            />
+            <SidebarButton
+              active={screen === "tasks"}
+              label="Tarefas"
+              icon={<ClipboardList className="h-5 w-5" />}
+              onClick={() => setScreen("tasks")}
+            />
+            <SidebarButton
+              active={screen === "calendar"}
+              label="Calendário"
+              icon={<CalendarDays className="h-5 w-5" />}
+              onClick={() => setScreen("calendar")}
+            />
+            <SidebarButton
+              active={screen === "workspace"}
+              label="Configurar"
+              icon={<Settings className="h-5 w-5" />}
+              onClick={() => setScreen("workspace")}
+            />
           </nav>
 
           <button
@@ -903,6 +1025,7 @@ export function ClassBoardApp() {
                 <p className="text-sm text-slate-500">{workspace?.school_name ?? ""}</p>
                 <h1 className="text-2xl font-bold text-slate-900">{workspace?.name ?? "Configurar espaço"}</h1>
               </div>
+
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
@@ -918,6 +1041,7 @@ export function ClassBoardApp() {
                     ? "Sem suporte"
                     : "Ativar notificações"}
                 </button>
+
                 {workspace ? (
                   <button
                     type="button"
@@ -954,12 +1078,19 @@ export function ClassBoardApp() {
                       <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
                         <div>
                           <div className="flex items-center gap-2 text-sm text-blue-100">
-                            <Home className="h-4 w-4" /> {workspace.name} <span className="opacity-60">|</span> {workspace.school_name}
+                            <Home className="h-4 w-4" /> {workspace.name} <span className="opacity-60">|</span>{" "}
+                            {workspace.school_name}
                           </div>
+
                           <h2 className="mt-2 text-3xl font-bold">
-                            Olá{session?.user?.user_metadata?.full_name ? `, ${session.user.user_metadata.full_name}` : ""}!
+                            Olá
+                            {session?.user?.user_metadata?.full_name
+                              ? `, ${String(session.user.user_metadata.full_name)}`
+                              : ""}
+                            !
                           </h2>
                         </div>
+
                         <div className="grid gap-3 sm:grid-cols-3">
                           <QuickMetric label="Concluídas" value={String(doneCount)} tone="bg-white/15" />
                           <QuickMetric label="Pendentes" value={String(pendingCount)} tone="bg-white/15" />
@@ -972,7 +1103,9 @@ export function ClassBoardApp() {
                       <Panel title="Hoje">
                         <div className="space-y-3">
                           {todayTasks.length ? (
-                            todayTasks.map((task) => <TaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />)
+                            todayTasks.map((task) => (
+                              <TaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />
+                            ))
                           ) : (
                             <EmptyState text="Nenhuma tarefa para hoje." />
                           )}
@@ -983,7 +1116,9 @@ export function ClassBoardApp() {
                         <Panel title="Próximas Provas">
                           <div className="space-y-3">
                             {upcomingTests.length ? (
-                              upcomingTests.map((task) => <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />)
+                              upcomingTests.map((task) => (
+                                <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />
+                              ))
                             ) : (
                               <EmptyState text="Sem provas próximas." />
                             )}
@@ -993,7 +1128,9 @@ export function ClassBoardApp() {
                         <Panel title="Tarefas Pendentes">
                           <div className="space-y-3">
                             {pendingTasks.length ? (
-                              pendingTasks.map((task) => <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />)
+                              pendingTasks.map((task) => (
+                                <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />
+                              ))
                             ) : (
                               <EmptyState text="Nenhuma pendência agora." />
                             )}
@@ -1006,7 +1143,11 @@ export function ClassBoardApp() {
                       <div className="grid gap-4 md:grid-cols-3">
                         <SummaryCard label="Concluídas" value={doneCount} className="bg-brand-600 text-white" />
                         <SummaryCard label="Pendentes" value={pendingCount} className="bg-orange-500 text-white" />
-                        <SummaryCard label="Prova na semana" value={upcomingTests.length} className="bg-emerald-500 text-white" />
+                        <SummaryCard
+                          label="Prova na semana"
+                          value={upcomingTests.length}
+                          className="bg-emerald-500 text-white"
+                        />
                       </div>
                     </Panel>
                   </div>
@@ -1031,6 +1172,7 @@ export function ClassBoardApp() {
                             className="h-12 w-full rounded-2xl border border-slate-200 pl-11 pr-4"
                           />
                         </div>
+
                         <div className="flex flex-wrap gap-2">
                           {[
                             ["todos", "Todos"],
@@ -1043,7 +1185,9 @@ export function ClassBoardApp() {
                               type="button"
                               onClick={() => setTaskFilter(key as typeof taskFilter)}
                               className={`inline-flex h-11 items-center justify-center rounded-2xl px-4 text-sm font-medium transition ${
-                                taskFilter === key ? "bg-brand-600 text-white" : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                                taskFilter === key
+                                  ? "bg-brand-600 text-white"
+                                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                               }`}
                             >
                               {label}
@@ -1056,7 +1200,12 @@ export function ClassBoardApp() {
                     <div className="grid gap-5 xl:grid-cols-2">
                       {filteredTasks.length ? (
                         filteredTasks.map((task) => (
-                          <TaskCard key={task.id} task={task} onToggleChecklist={toggleChecklist} onEdit={() => openEditTask(task)} />
+                          <TaskCard
+                            key={task.id}
+                            task={task}
+                            onToggleChecklist={toggleChecklist}
+                            onEdit={() => openEditTask(task)}
+                          />
                         ))
                       ) : (
                         <Panel title="Lista">
@@ -1071,14 +1220,18 @@ export function ClassBoardApp() {
                   <Panel title="Calendário">
                     <div className="grid gap-4 md:grid-cols-5">
                       {weeklyCalendar.map((day) => (
-                        <div key={day.iso} className="min-h-[200px] rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                        <div
+                          key={day.iso}
+                          className="min-h-[200px] rounded-[24px] border border-slate-200 bg-slate-50 p-4"
+                        >
                           <div className="flex items-center justify-between">
                             <div>
-                              <p className="font-semibold text-slate-900 uppercase">{day.dayLabel}</p>
+                              <p className="font-semibold uppercase text-slate-900">{day.dayLabel}</p>
                               <p className="text-sm text-slate-500">{formatDate(day.iso)}</p>
                             </div>
                             <CalendarDays className="h-5 w-5 text-slate-400" />
                           </div>
+
                           <div className="mt-5 space-y-3">
                             {day.items.length ? (
                               day.items.map((task) => (
@@ -1208,7 +1361,17 @@ function WorkspaceSetupForm({
   );
 }
 
-function SidebarButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: ReactNode; onClick: () => void }) {
+function SidebarButton({
+  active,
+  label,
+  icon,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
@@ -1233,7 +1396,11 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function AlertBanner({ tone, message }: { tone: "success" | "error"; message: string }) {
-  const toneClasses = tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700";
+  const toneClasses =
+    tone === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : "border-red-200 bg-red-50 text-red-700";
+
   return (
     <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 text-sm font-medium ${toneClasses}`}>
       <AlertCircle className="h-4 w-4" /> {message}
@@ -1261,8 +1428,11 @@ function TaskRow({ task, onEdit }: { task: Task; onEdit: () => void }) {
         <p className="font-semibold text-slate-900">{task.title}</p>
         <p className="mt-1 text-sm text-slate-500">{task.subject}</p>
       </div>
+
       <div className="flex items-center gap-3">
-        <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>{humanDueLabel(task.due_date)}</span>
+        <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>
+          {humanDueLabel(task.due_date)}
+        </span>
         <Pencil className="h-4 w-4 text-slate-400" />
       </div>
     </button>
@@ -1280,6 +1450,7 @@ function CompactTaskRow({ task, onEdit }: { task: Task; onEdit: () => void }) {
         <p className="text-xl font-semibold text-slate-900">{task.subject}</p>
         <p className="text-slate-500">{task.title}</p>
       </div>
+
       <div className="text-right">
         <p className="text-2xl font-bold text-brand-600">{humanDueLabel(task.due_date).replace("Em ", "")}</p>
         <p className="text-sm text-slate-400">{formatDate(task.due_date)}</p>
@@ -1298,10 +1469,26 @@ function SummaryCard({ label, value, className }: { label: string; value: number
 }
 
 function EmptyState({ text, compact = false }: { text: string; compact?: boolean }) {
-  return <div className={`rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-500 ${compact ? "px-4 py-3 text-sm" : "px-5 py-10"}`}>{text}</div>;
+  return (
+    <div
+      className={`rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-500 ${
+        compact ? "px-4 py-3 text-sm" : "px-5 py-10"
+      }`}
+    >
+      {text}
+    </div>
+  );
 }
 
-function TaskCard({ task, onToggleChecklist, onEdit }: { task: Task; onToggleChecklist: (task: Task, item: ChecklistItem) => Promise<void> | void; onEdit: () => void }) {
+function TaskCard({
+  task,
+  onToggleChecklist,
+  onEdit,
+}: {
+  task: Task;
+  onToggleChecklist: (task: Task, item: ChecklistItem) => Promise<void> | void;
+  onEdit: () => void;
+}) {
   const progress = calculateProgress(task.checklist_items);
 
   return (
@@ -1309,15 +1496,23 @@ function TaskCard({ task, onToggleChecklist, onEdit }: { task: Task; onToggleChe
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="mb-3 flex flex-wrap gap-2">
-            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapPriority(task.priority)}`}>{task.priority}</span>
-            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>{humanDueLabel(task.due_date)}</span>
-            <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-700">{statusLabel(task.status)}</span>
+            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapPriority(task.priority)}`}>
+              {task.priority}
+            </span>
+            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>
+              {humanDueLabel(task.due_date)}
+            </span>
+            <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-700">
+              {statusLabel(task.status)}
+            </span>
           </div>
+
           <h3 className="text-2xl font-bold text-slate-900">{task.title}</h3>
           <p className="mt-1 text-slate-500">
             {task.subject} • {typeLabel(task.task_type)}
           </p>
         </div>
+
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -1334,6 +1529,7 @@ function TaskCard({ task, onToggleChecklist, onEdit }: { task: Task; onToggleChe
           <span className="text-slate-600">Progresso</span>
           <span className="font-semibold text-slate-900">{progress}%</span>
         </div>
+
         <div className="h-2 rounded-full bg-slate-100">
           <div className="h-2 rounded-full bg-brand-600 transition-all" style={{ width: `${progress}%` }} />
         </div>
@@ -1350,7 +1546,9 @@ function TaskCard({ task, onToggleChecklist, onEdit }: { task: Task; onToggleChe
               onClick={() => void onToggleChecklist(task, item)}
               className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-3 text-left transition hover:bg-slate-50"
             >
-              <span className={`${item.is_done ? "text-slate-400 line-through" : "text-slate-700"}`}>{item.content}</span>
+              <span className={`${item.is_done ? "text-slate-400 line-through" : "text-slate-700"}`}>
+                {item.content}
+              </span>
               <CheckCircle2 className={`h-5 w-5 ${item.is_done ? "text-emerald-500" : "text-slate-300"}`} />
             </button>
           ))
