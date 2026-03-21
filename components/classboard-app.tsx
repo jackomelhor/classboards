@@ -1145,13 +1145,13 @@ export function ClassBoardApp() {
     }
   }
 
-  const navItems: Array<{ id: Screen; label: string; icon: ReactNode; hidden?: boolean }> = [
-    { id: "plans", label: "Planos", icon: <Crown className="h-5 w-5" /> },
-    { id: "dashboard", label: "Painel", icon: <LayoutDashboard className="h-5 w-5" />, hidden: !workspace },
-    { id: "tasks", label: "Tarefas", icon: <ClipboardList className="h-5 w-5" />, hidden: !workspace },
-    { id: "calendar", label: "Calendário", icon: <CalendarDays className="h-5 w-5" />, hidden: !workspace },
-    { id: "workspace", label: "Espaço", icon: <Settings className="h-5 w-5" />, hidden: !workspace },
-    { id: "admin", label: "Admin", icon: <Shield className="h-5 w-5" />, hidden: !isAdmin },
+  const navItems = [
+    { id: "plans" as Screen, label: "Planos", icon: <Crown className="h-5 w-5" /> },
+    { id: "dashboard" as Screen, label: "Painel", icon: <LayoutDashboard className="h-5 w-5" />, hidden: !workspace },
+    { id: "tasks" as Screen, label: "Tarefas", icon: <ClipboardList className="h-5 w-5" />, hidden: !workspace },
+    { id: "calendar" as Screen, label: "Calendário", icon: <CalendarDays className="h-5 w-5" />, hidden: !workspace },
+    { id: "workspace" as Screen, label: "Espaço", icon: <Settings className="h-5 w-5" />, hidden: !workspace },
+    { id: "admin" as Screen, label: "Admin", icon: <Shield className="h-5 w-5" />, hidden: !isAdmin },
   ].filter((item) => !item.hidden);
 
   if (loadingAuth) {
