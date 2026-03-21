@@ -19,6 +19,7 @@ import {
   Plus,
   Search,
   Settings,
+  Trash2,
   Users,
 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -29,13 +30,16 @@ import type {
   TaskFormValues,
   TaskStatus,
   TaskType,
+  UserProfile,
   Workspace,
+  WorkspaceGroup,
+  WorkspaceMember,
+  WorkspaceType,
 } from "@/lib/types";
 import { TaskForm } from "@/components/task-form";
 
 type Screen = "dashboard" | "tasks" | "calendar" | "workspace";
 type AuthMode = "signin" | "signup";
-type WorkspaceType = Workspace["workspace_type"];
 
 type WorkspaceMembershipQuery = {
   workspace_id: string;
@@ -54,6 +58,22 @@ const emptyWorkspaceForm: WorkspaceFormValues = {
   className: "",
   workspaceType: "turma",
 };
+
+function createLocalSession(name: string): Session {
+  return {
+    access_token: "local-access-token",
+    refresh_token: "local-refresh-token",
+    expires_in: 60 * 60 * 24,
+    token_type: "bearer",
+    user: {
+      id: "local-user",
+      aud: "authenticated",
+      app_metadata: {},
+      user_metadata: { full_name: name || "Usuário" },
+      created_at: new Date().toISOString(),
+    },
+  } as unknown as Session;
+}
 
 function startOfWeek(base = new Date()) {
   const date = new Date(base);
@@ -140,8 +160,21 @@ function taskToFormValues(task: Task): TaskFormValues {
     priority: task.priority,
     status: task.status,
     checklistRaw: task.checklist_items.map((item) => item.content).join("\n"),
+    groupId: task.group_id ?? "",
     file: null,
   };
+}
+
+function getUserDisplayName(session: Session | null) {
+  const metadataName = session?.user?.user_metadata?.full_name;
+  if (typeof metadataName === "string" && metadataName.trim()) return metadataName.trim();
+  const email = session?.user?.email;
+  if (email) return email.split("@")[0];
+  return "usuário";
+}
+
+function formatRole(role: WorkspaceMember["role"]) {
+  return role === "owner" ? "Dono" : "Membro";
 }
 
 async function uploadAttachment(file: File, userId: string) {
@@ -162,21 +195,6 @@ async function uploadAttachment(file: File, userId: string) {
   };
 }
 
-function createLocalSession(name: string): Session {
-  return {
-    access_token: "local-access-token",
-    refresh_token: "local-refresh-token",
-    expires_in: 60 * 60 * 24,
-    token_type: "bearer",
-    user: {
-      id: "local-user",
-      aud: "authenticated",
-      app_metadata: {},
-      user_metadata: { full_name: name || "Usuário" },
-      created_at: new Date().toISOString(),
-    },
-  } as unknown as Session;
-}
 export function ClassBoardApp() {
   const localMode = !isSupabaseConfigured || !supabase;
 
@@ -190,6 +208,8 @@ export function ClassBoardApp() {
   const [submittingAuth, setSubmittingAuth] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [groups, setGroups] = useState<WorkspaceGroup[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [workspaceForm, setWorkspaceForm] = useState<WorkspaceFormValues>(emptyWorkspaceForm);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
@@ -205,6 +225,10 @@ export function ClassBoardApp() {
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
     typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
   );
+  const [groupName, setGroupName] = useState("");
+  const [groupDescription, setGroupDescription] = useState("");
+  const [savingGroup, setSavingGroup] = useState(false);
+  const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
 
   useEffect(() => {
     if (localMode || !supabase) {
@@ -236,6 +260,8 @@ export function ClassBoardApp() {
 
     if (!session?.user) {
       setWorkspace(null);
+      setMembers([]);
+      setGroups([]);
       setTasks([]);
       setWorkspaceForm(emptyWorkspaceForm);
       return;
@@ -253,39 +279,37 @@ export function ClassBoardApp() {
   useEffect(() => {
     if (notificationPermission !== "granted") return;
     if (!tasks.length) return;
+    if (typeof window === "undefined") return;
 
-    const cacheKey = `classboard-notified-${new Date().toISOString().slice(0, 10)}`;
-    const notified = typeof window !== "undefined" ? window.sessionStorage.getItem(cacheKey) : null;
-    if (notified) return;
-
-    const dueSoon = tasks.filter((task) => diffInDays(task.due_date) <= 1 && task.status !== "concluida");
+    const priorityWindows = [0, 1, 3];
+    const dueSoon = tasks.filter(
+      (task) => priorityWindows.includes(diffInDays(task.due_date)) && task.status !== "concluida"
+    );
     if (!dueSoon.length) return;
 
-    const task = dueSoon[0];
-    new Notification("ClassBoard", {
-      body: `${task.title} • ${humanDueLabel(task.due_date)}`,
-    });
+    dueSoon.sort((a, b) => diffInDays(a.due_date) - diffInDays(b.due_date));
+    const nextTask = dueSoon[0];
+    const days = diffInDays(nextTask.due_date);
+    const cacheKey = `classboard-notified-${nextTask.id}-${days}`;
+    if (window.sessionStorage.getItem(cacheKey)) return;
 
-    if (typeof window !== "undefined") {
-      window.sessionStorage.setItem(cacheKey, "1");
-    }
+    new Notification("ClassBoard", {
+      body: `${nextTask.title} • ${humanDueLabel(nextTask.due_date)}`,
+    });
+    window.sessionStorage.setItem(cacheKey, "1");
   }, [notificationPermission, tasks]);
 
   const todayTasks = useMemo(() => tasks.filter((task) => diffInDays(task.due_date) === 0), [tasks]);
-
   const upcomingTests = useMemo(
-    () => tasks.filter((task) => task.task_type === "prova" && task.status !== "concluida").slice(0, 2),
+    () => tasks.filter((task) => task.task_type === "prova" && task.status !== "concluida").slice(0, 3),
     [tasks]
   );
-
   const pendingTasks = useMemo(
-    () => tasks.filter((task) => task.task_type !== "prova" && task.status !== "concluida").slice(0, 2),
+    () => tasks.filter((task) => task.task_type !== "prova" && task.status !== "concluida").slice(0, 3),
     [tasks]
   );
-
   const doneCount = useMemo(() => tasks.filter((task) => task.status === "concluida").length, [tasks]);
   const pendingCount = useMemo(() => tasks.filter((task) => task.status !== "concluida").length, [tasks]);
-
   const weeklyCalendar = useMemo(() => {
     const weekStart = startOfWeek();
 
@@ -294,24 +318,23 @@ export function ClassBoardApp() {
       current.setDate(weekStart.getDate() + index);
       const iso = current.toISOString().slice(0, 10);
       const items = tasks.filter((task) => task.due_date === iso);
-      const dayLabel = new Intl.DateTimeFormat("pt-BR", { weekday: "short" })
-        .format(current)
-        .replace(".", "");
-
+      const dayLabel = new Intl.DateTimeFormat("pt-BR", { weekday: "short" }).format(current).replace(".", "");
       return { iso, dayLabel, items };
     });
   }, [tasks]);
-
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
-      const matchesSearch = `${task.title} ${task.subject}`.toLowerCase().includes(search.toLowerCase());
+      const groupNameLookup = groups.find((group) => group.id === task.group_id)?.name ?? "";
+      const matchesSearch = `${task.title} ${task.subject} ${groupNameLookup}`
+        .toLowerCase()
+        .includes(search.toLowerCase());
       if (!matchesSearch) return false;
       if (taskFilter === "proximas") return diffInDays(task.due_date) <= 3;
       if (taskFilter === "provas") return task.task_type === "prova";
       if (taskFilter === "concluidas") return task.status === "concluida";
       return true;
     });
-  }, [tasks, search, taskFilter]);
+  }, [groups, tasks, search, taskFilter]);
 
   async function bootstrapWorkspace(user: User) {
     const client = supabase;
@@ -325,14 +348,16 @@ export function ClassBoardApp() {
         .from("workspace_members")
         .select("workspace_id, role, workspaces(*)")
         .eq("user_id", user.id)
+        .order("created_at", { ascending: true })
         .limit(1);
 
       if (membershipQuery.error) throw membershipQuery.error;
 
       const row = membershipQuery.data?.[0] as WorkspaceMembershipQuery | undefined;
-
       if (!row) {
         setWorkspace(null);
+        setMembers([]);
+        setGroups([]);
         setTasks([]);
         setWorkspaceForm(emptyWorkspaceForm);
         setScreen("workspace");
@@ -344,7 +369,7 @@ export function ClassBoardApp() {
 
       if (currentWorkspace) {
         setWorkspaceForm(workspaceToFormValues(currentWorkspace));
-        await loadTasks(currentWorkspace.id);
+        await loadWorkspaceBundle(currentWorkspace.id);
       }
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : "Não foi possível carregar os dados.";
@@ -352,6 +377,10 @@ export function ClassBoardApp() {
     } finally {
       setLoadingData(false);
     }
+  }
+
+  async function loadWorkspaceBundle(workspaceId: string) {
+    await Promise.all([loadTasks(workspaceId), loadGroups(workspaceId), loadMembers(workspaceId)]);
   }
 
   async function loadTasks(workspaceId: string) {
@@ -367,7 +396,6 @@ export function ClassBoardApp() {
     if (query.error) throw query.error;
 
     const records = (query.data ?? []) as Task[];
-
     setTasks(
       records.map((task) => ({
         ...task,
@@ -378,6 +406,49 @@ export function ClassBoardApp() {
     );
   }
 
+  async function loadGroups(workspaceId: string) {
+    const client = supabase;
+    if (!client) return;
+
+    const query = await client
+      .from("groups")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending: true });
+
+    if (query.error) throw query.error;
+    setGroups((query.data ?? []) as WorkspaceGroup[]);
+  }
+
+  async function loadMembers(workspaceId: string) {
+    const client = supabase;
+    if (!client) return;
+
+    const membershipQuery = await client
+      .from("workspace_members")
+      .select("id, workspace_id, user_id, role, created_at")
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending: true });
+
+    if (membershipQuery.error) throw membershipQuery.error;
+
+    const rows = (membershipQuery.data ?? []) as WorkspaceMember[];
+    const userIds = [...new Set(rows.map((row) => row.user_id))];
+
+    let profilesMap = new Map<string, UserProfile>();
+
+    if (userIds.length) {
+      const profilesQuery = await client.from("user_profiles").select("*").in("user_id", userIds);
+      if (!profilesQuery.error) {
+        profilesMap = new Map(
+          ((profilesQuery.data ?? []) as UserProfile[]).map((profile) => [profile.user_id, profile])
+        );
+      }
+    }
+
+    setMembers(rows.map((row) => ({ ...row, profile: profilesMap.get(row.user_id) ?? null })));
+  }
+
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmittingAuth(true);
@@ -386,36 +457,57 @@ export function ClassBoardApp() {
 
     try {
       if (localMode) {
-  setSession(createLocalSession(fullName));
-  return;
-}
-
-      const client = supabase;
-      if (!client) {
-        throw new Error("Supabase não configurado.");
+        setSession(createLocalSession(fullName));
+        return;
       }
 
+      const client = supabase;
+      if (!client) throw new Error("Supabase não configurado.");
+
       if (authMode === "signup") {
+        const check = await client.rpc("email_exists", { candidate_email: email.trim().toLowerCase() });
+        if (!check.error && check.data) {
+          throw new Error("Este email já tem conta. Use Entrar.");
+        }
+
         const response = await client.auth.signUp({
-          email,
+          email: email.trim().toLowerCase(),
           password,
           options: {
             data: {
-              full_name: fullName,
+              full_name: fullName.trim(),
             },
           },
         });
 
-        if (response.error) throw response.error;
+        if (response.error) {
+          if (/already registered|already been registered|user already registered/i.test(response.error.message)) {
+            throw new Error("Este email já tem conta. Use Entrar.");
+          }
+          throw response.error;
+        }
 
         if (response.data.session) {
           setSession(response.data.session);
+          setEmail("");
+          setPassword("");
         } else {
-          setMessage("Conta criada. Confirme o email se essa opção estiver ativa no Supabase.");
+          setMessage(
+            "Conta criada. Para entrar sem email de verificação, desative Confirm email no Supabase e tente novamente."
+          );
         }
       } else {
-        const response = await client.auth.signInWithPassword({ email, password });
-        if (response.error) throw response.error;
+        const response = await client.auth.signInWithPassword({
+          email: email.trim().toLowerCase(),
+          password,
+        });
+
+        if (response.error) {
+          if (/invalid login credentials/i.test(response.error.message)) {
+            throw new Error("Email ou senha inválidos.");
+          }
+          throw response.error;
+        }
       }
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : "Não foi possível autenticar.";
@@ -432,6 +524,8 @@ export function ClassBoardApp() {
     if (localMode) {
       setSession(null);
       setWorkspace(null);
+      setMembers([]);
+      setGroups([]);
       setTasks([]);
       setWorkspaceForm(emptyWorkspaceForm);
       return;
@@ -445,6 +539,8 @@ export function ClassBoardApp() {
 
     await client.auth.signOut();
     setWorkspace(null);
+    setMembers([]);
+    setGroups([]);
     setTasks([]);
     setWorkspaceForm(emptyWorkspaceForm);
   }
@@ -473,8 +569,7 @@ export function ClassBoardApp() {
           owner_id: ownerId,
           invite_code: workspace?.invite_code ?? Math.random().toString(36).slice(2, 10).toUpperCase(),
           ...payload,
-        } as Workspace;
-
+        };
         setWorkspace(nextWorkspace);
         setScreen("dashboard");
         return;
@@ -482,7 +577,6 @@ export function ClassBoardApp() {
 
       const client = supabase;
       const currentUserId = session?.user?.id;
-
       if (!currentUserId || !client) {
         throw new Error("Sessão não encontrada.");
       }
@@ -490,10 +584,7 @@ export function ClassBoardApp() {
       if (!workspace) {
         const insertedWorkspace = await client
           .from("workspaces")
-          .insert({
-            owner_id: currentUserId,
-            ...payload,
-          })
+          .insert({ owner_id: currentUserId, ...payload })
           .select("*")
           .single();
 
@@ -504,12 +595,13 @@ export function ClassBoardApp() {
           user_id: currentUserId,
           role: "owner",
         });
-
         if (insertedMembership.error) throw insertedMembership.error;
 
         setWorkspace(insertedWorkspace.data as Workspace);
         setWorkspaceForm(workspaceToFormValues(insertedWorkspace.data as Workspace));
         setTasks([]);
+        setGroups([]);
+        setMembers([]);
       } else {
         const updatedWorkspace = await client
           .from("workspaces")
@@ -519,18 +611,90 @@ export function ClassBoardApp() {
           .single();
 
         if (updatedWorkspace.error) throw updatedWorkspace.error;
-
         setWorkspace(updatedWorkspace.data as Workspace);
         setWorkspaceForm(workspaceToFormValues(updatedWorkspace.data as Workspace));
       }
 
       setMessage("Informações salvas.");
       setScreen("dashboard");
+      if (workspace?.id) {
+        await loadWorkspaceBundle(workspace.id);
+      }
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : "Não foi possível salvar as informações.";
       setErrorMessage(nextMessage);
     } finally {
       setSavingWorkspace(false);
+    }
+  }
+
+  async function handleCreateGroup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!workspace) return;
+
+    setSavingGroup(true);
+    setErrorMessage(null);
+    setMessage(null);
+
+    try {
+      const trimmedName = groupName.trim();
+      if (!trimmedName) throw new Error("Informe o nome do grupo.");
+
+      if (localMode || !supabase || !session?.user) {
+        const nextGroup: WorkspaceGroup = {
+          id: crypto.randomUUID(),
+          workspace_id: workspace.id,
+          created_by: session?.user?.id ?? "local-user",
+          name: trimmedName,
+          description: groupDescription.trim() || null,
+          created_at: new Date().toISOString(),
+        };
+        setGroups((prev) => [...prev, nextGroup]);
+      } else {
+        const client = supabase;
+        const insert = await client.from("groups").insert({
+          workspace_id: workspace.id,
+          created_by: session.user.id,
+          name: trimmedName,
+          description: groupDescription.trim() || null,
+        });
+        if (insert.error) throw insert.error;
+        await loadGroups(workspace.id);
+      }
+
+      setGroupName("");
+      setGroupDescription("");
+      setMessage("Grupo criado.");
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : "Não foi possível criar o grupo.";
+      setErrorMessage(nextMessage);
+    } finally {
+      setSavingGroup(false);
+    }
+  }
+
+  async function handleDeleteGroup(group: WorkspaceGroup) {
+    if (!workspace) return;
+    setDeletingGroupId(group.id);
+    setErrorMessage(null);
+    setMessage(null);
+
+    try {
+      if (localMode || !supabase) {
+        setGroups((prev) => prev.filter((item) => item.id !== group.id));
+        setTasks((prev) => prev.map((task) => (task.group_id === group.id ? { ...task, group_id: null } : task)));
+      } else {
+        const client = supabase;
+        const deleteGroup = await client.from("groups").delete().eq("id", group.id);
+        if (deleteGroup.error) throw deleteGroup.error;
+        await Promise.all([loadGroups(workspace.id), loadTasks(workspace.id)]);
+      }
+      setMessage("Grupo removido.");
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : "Não foi possível remover o grupo.";
+      setErrorMessage(nextMessage);
+    } finally {
+      setDeletingGroupId(null);
     }
   }
 
@@ -565,7 +729,6 @@ export function ClassBoardApp() {
       if (taskFormMode === "create") {
         if (localMode || !supabase || !session?.user) {
           const newTaskId = crypto.randomUUID();
-
           const newTask: Task = {
             id: newTaskId,
             workspace_id: workspace.id,
@@ -579,6 +742,7 @@ export function ClassBoardApp() {
             status: values.status,
             attachment_name: values.file?.name ?? null,
             attachment_url: null,
+            group_id: values.groupId || null,
             checklist_items: checklistLines.map((content) => ({
               id: crypto.randomUUID(),
               task_id: newTaskId,
@@ -586,11 +750,9 @@ export function ClassBoardApp() {
               is_done: false,
             })),
           };
-
           setTasks((prev) => [...prev, newTask].sort((a, b) => a.due_date.localeCompare(b.due_date)));
         } else {
           const client = supabase;
-
           const insertedTask = await client
             .from("tasks")
             .insert({
@@ -603,12 +765,12 @@ export function ClassBoardApp() {
               due_date: values.dueDate,
               priority: values.priority,
               status: values.status,
+              group_id: values.groupId || null,
               attachment_name: attachment?.attachment_name ?? null,
               attachment_url: attachment?.attachment_url ?? null,
             })
             .select("*")
             .single();
-
           if (insertedTask.error) throw insertedTask.error;
 
           if (checklistLines.length) {
@@ -619,7 +781,6 @@ export function ClassBoardApp() {
                 is_done: false,
               }))
             );
-
             if (insertChecklist.error) throw insertChecklist.error;
           }
 
@@ -640,6 +801,7 @@ export function ClassBoardApp() {
                       due_date: values.dueDate,
                       priority: values.priority,
                       status: values.status,
+                      group_id: values.groupId || null,
                       attachment_name: values.file?.name ?? task.attachment_name,
                       checklist_items: checklistLines.map((content, index) => ({
                         id: task.checklist_items[index]?.id ?? crypto.randomUUID(),
@@ -654,7 +816,6 @@ export function ClassBoardApp() {
           );
         } else {
           const client = supabase;
-
           const updateTask = await client
             .from("tasks")
             .update({
@@ -665,11 +826,11 @@ export function ClassBoardApp() {
               due_date: values.dueDate,
               priority: values.priority,
               status: values.status,
+              group_id: values.groupId || null,
               attachment_name: attachment?.attachment_name ?? selectedTask.attachment_name,
               attachment_url: attachment?.attachment_url ?? selectedTask.attachment_url,
             })
             .eq("id", selectedTask.id);
-
           if (updateTask.error) throw updateTask.error;
 
           const deleteChecklist = await client.from("checklist_items").delete().eq("task_id", selectedTask.id);
@@ -683,7 +844,6 @@ export function ClassBoardApp() {
                 is_done: false,
               }))
             );
-
             if (insertChecklist.error) throw insertChecklist.error;
           }
 
@@ -716,7 +876,6 @@ export function ClassBoardApp() {
         const client = supabase;
         const deleteTask = await client.from("tasks").delete().eq("id", selectedTask.id);
         if (deleteTask.error) throw deleteTask.error;
-
         if (workspace) {
           await loadTasks(workspace.id);
         }
@@ -746,11 +905,7 @@ export function ClassBoardApp() {
         setTasks((prev) =>
           prev.map((currentTask) =>
             currentTask.id === task.id
-              ? {
-                  ...currentTask,
-                  status: nextStatus,
-                  checklist_items: updatedItems,
-                }
+              ? { ...currentTask, status: nextStatus, checklist_items: updatedItems }
               : currentTask
           )
         );
@@ -758,12 +913,10 @@ export function ClassBoardApp() {
       }
 
       const client = supabase;
-
       const checklistUpdate = await client
         .from("checklist_items")
         .update({ is_done: !item.is_done })
         .eq("id", item.id);
-
       if (checklistUpdate.error) throw checklistUpdate.error;
 
       const taskUpdate = await client.from("tasks").update({ status: nextStatus }).eq("id", task.id);
@@ -772,11 +925,7 @@ export function ClassBoardApp() {
       setTasks((prev) =>
         prev.map((currentTask) =>
           currentTask.id === task.id
-            ? {
-                ...currentTask,
-                status: nextStatus,
-                checklist_items: updatedItems,
-              }
+            ? { ...currentTask, status: nextStatus, checklist_items: updatedItems }
             : currentTask
         )
       );
@@ -791,19 +940,19 @@ export function ClassBoardApp() {
       setNotificationPermission("unsupported");
       return;
     }
-
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
   }
 
   async function copyInviteLink() {
     if (!workspace) return;
-
     const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
     const link = `${origin}/join/${workspace.invite_code}`;
     await navigator.clipboard.writeText(link);
     setMessage("Link copiado.");
   }
+
+  const currentUserName = getUserDisplayName(session);
 
   if (loadingAuth) {
     return (
@@ -818,8 +967,8 @@ export function ClassBoardApp() {
 
   if (!session?.user && !localMode) {
     return (
-      <div className="auth-grid-bg min-h-screen px-4 py-8 text-white md:px-8 lg:px-10">
-        <div className="mx-auto grid min-h-[90vh] max-w-7xl gap-6 lg:grid-cols-[220px_1.1fr_0.95fr]">
+      <div className="auth-grid-bg min-h-screen px-4 py-6 text-white md:px-6 lg:px-8">
+        <div className="mx-auto grid min-h-[92vh] max-w-7xl gap-4 lg:grid-cols-[200px_1fr_0.95fr] lg:gap-6">
           <aside className="hidden rounded-[30px] border border-white/10 bg-white/5 p-5 backdrop-blur lg:flex lg:flex-col lg:justify-between">
             <div className="space-y-6">
               <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-600 shadow-lg shadow-brand-950/40">
@@ -836,7 +985,6 @@ export function ClassBoardApp() {
                 >
                   <Mail className="h-4 w-4" /> Entrar
                 </button>
-
                 <button
                   type="button"
                   onClick={() => setAuthMode("signup")}
@@ -852,24 +1000,56 @@ export function ClassBoardApp() {
             </div>
           </aside>
 
-          <section className="flex rounded-[34px] border border-white/10 bg-gradient-to-br from-brand-500 via-blue-600 to-sky-500 p-8 shadow-2xl shadow-brand-950/30">
-            <div className="flex w-full flex-col justify-between gap-10">
+          <section className="flex rounded-[34px] border border-white/10 bg-gradient-to-br from-brand-500 via-blue-600 to-sky-500 p-6 shadow-2xl shadow-brand-950/30 sm:p-8">
+            <div className="flex w-full flex-col justify-between gap-8">
               <div className="space-y-6">
                 <div className="inline-flex w-fit items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm backdrop-blur">
                   <BookOpen className="h-4 w-4" /> ClassBoard
                 </div>
-
                 <div className="max-w-xl space-y-4">
-                  <h1 className="text-4xl font-bold leading-tight md:text-5xl">Organização escolar</h1>
+                  <h1 className="text-3xl font-bold leading-tight sm:text-4xl md:text-5xl">
+                    Organização escolar no celular e no computador
+                  </h1>
+                  <p className="max-w-lg text-sm text-blue-100 sm:text-base">
+                    Entre, configure a turma e centralize tarefas, provas, calendário, grupos e convites em um único lugar.
+                  </p>
                 </div>
               </div>
             </div>
           </section>
 
-          <section className="rounded-[30px] border border-white/10 bg-slate-950/85 p-8 backdrop-blur">
+          <section className="rounded-[30px] border border-white/10 bg-slate-950/85 p-5 backdrop-blur sm:p-8">
             <div className="space-y-6">
+              <div className="flex items-center justify-between gap-3 lg:hidden">
+                <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-600 shadow-lg shadow-brand-950/40">
+                  <BookOpen className="h-5 w-5" />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAuthMode("signin")}
+                    className={`rounded-2xl px-4 py-2 text-sm ${
+                      authMode === "signin" ? "bg-white/10 text-white" : "text-slate-300"
+                    }`}
+                  >
+                    Entrar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAuthMode("signup")}
+                    className={`rounded-2xl px-4 py-2 text-sm ${
+                      authMode === "signup" ? "bg-brand-600 text-white" : "text-slate-300"
+                    }`}
+                  >
+                    Criar conta
+                  </button>
+                </div>
+              </div>
+
               <div>
-                <h2 className="mt-1 text-3xl font-bold">{authMode === "signup" ? "Criar conta" : "Entrar"}</h2>
+                <h2 className="mt-1 text-2xl font-bold sm:text-3xl">
+                  {authMode === "signup" ? "Criar conta" : "Entrar"}
+                </h2>
               </div>
 
               {message && <AlertBanner tone="success" message={message} />}
@@ -898,6 +1078,7 @@ export function ClassBoardApp() {
                     type="email"
                     className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-white placeholder:text-slate-500"
                     placeholder="joao@email.com"
+                    autoComplete="email"
                   />
                 </div>
 
@@ -911,6 +1092,7 @@ export function ClassBoardApp() {
                     type="password"
                     className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-white placeholder:text-slate-500"
                     placeholder="******"
+                    autoComplete={authMode === "signup" ? "new-password" : "current-password"}
                   />
                 </div>
 
@@ -931,14 +1113,13 @@ export function ClassBoardApp() {
 
   if (!session?.user && localMode) {
     return (
-      <div className="auth-grid-bg min-h-screen px-4 py-8 text-white md:px-8 lg:px-10">
-        <div className="mx-auto flex min-h-[90vh] max-w-xl items-center">
-          <section className="w-full rounded-[30px] border border-white/10 bg-slate-950/85 p-8 backdrop-blur">
+      <div className="auth-grid-bg min-h-screen px-4 py-6 text-white md:px-8 lg:px-10">
+        <div className="mx-auto flex min-h-[92vh] max-w-xl items-center">
+          <section className="w-full rounded-[30px] border border-white/10 bg-slate-950/85 p-6 backdrop-blur sm:p-8">
             <div className="space-y-6">
               <div>
-                <h2 className="mt-1 text-3xl font-bold">Entrar</h2>
+                <h2 className="mt-1 text-2xl font-bold sm:text-3xl">Entrar</h2>
               </div>
-
               <form className="space-y-4" onSubmit={handleAuthSubmit}>
                 <div className="space-y-2">
                   <label className="text-sm text-slate-300">Nome</label>
@@ -949,7 +1130,6 @@ export function ClassBoardApp() {
                     placeholder="Seu nome"
                   />
                 </div>
-
                 <button
                   type="submit"
                   disabled={submittingAuth}
@@ -979,6 +1159,7 @@ export function ClassBoardApp() {
         mode={taskFormMode}
         onDelete={taskFormMode === "edit" ? handleDeleteTask : null}
         deleting={deletingTask}
+        groups={groups}
       />
 
       <div className="flex min-h-screen">
@@ -993,30 +1174,10 @@ export function ClassBoardApp() {
           </div>
 
           <nav className="space-y-2">
-            <SidebarButton
-              active={screen === "dashboard"}
-              label="Painel"
-              icon={<Home className="h-5 w-5" />}
-              onClick={() => setScreen("dashboard")}
-            />
-            <SidebarButton
-              active={screen === "tasks"}
-              label="Tarefas"
-              icon={<ClipboardList className="h-5 w-5" />}
-              onClick={() => setScreen("tasks")}
-            />
-            <SidebarButton
-              active={screen === "calendar"}
-              label="Calendário"
-              icon={<CalendarDays className="h-5 w-5" />}
-              onClick={() => setScreen("calendar")}
-            />
-            <SidebarButton
-              active={screen === "workspace"}
-              label="Configurar"
-              icon={<Settings className="h-5 w-5" />}
-              onClick={() => setScreen("workspace")}
-            />
+            <SidebarButton active={screen === "dashboard"} label="Painel" icon={<Home className="h-5 w-5" />} onClick={() => setScreen("dashboard")} />
+            <SidebarButton active={screen === "tasks"} label="Tarefas" icon={<ClipboardList className="h-5 w-5" />} onClick={() => setScreen("tasks")} />
+            <SidebarButton active={screen === "calendar"} label="Calendário" icon={<CalendarDays className="h-5 w-5" />} onClick={() => setScreen("calendar")} />
+            <SidebarButton active={screen === "workspace"} label="Espaço" icon={<Settings className="h-5 w-5" />} onClick={() => setScreen("workspace")} />
           </nav>
 
           <button
@@ -1028,15 +1189,15 @@ export function ClassBoardApp() {
           </button>
         </aside>
 
-        <main className="flex-1 px-4 py-5 md:px-6 xl:px-8">
+        <main className="flex-1 px-4 py-4 pb-24 md:px-6 xl:px-8 xl:pb-8">
           <div className="mx-auto max-w-7xl space-y-5">
-            <div className="flex flex-col gap-3 rounded-[28px] bg-white p-4 shadow-panel md:flex-row md:items-center md:justify-between">
+            <div className="sticky top-0 z-20 rounded-[28px] bg-white/95 p-4 shadow-panel backdrop-blur md:flex md:items-center md:justify-between">
               <div>
                 <p className="text-sm text-slate-500">{workspace?.school_name ?? ""}</p>
                 <h1 className="text-2xl font-bold text-slate-900">{workspace?.name ?? "Configurar espaço"}</h1>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="mt-3 flex flex-wrap items-center gap-3 md:mt-0">
                 <button
                   type="button"
                   onClick={requestNotifications}
@@ -1051,7 +1212,6 @@ export function ClassBoardApp() {
                     ? "Sem suporte"
                     : "Ativar notificações"}
                 </button>
-
                 {workspace ? (
                   <button
                     type="button"
@@ -1084,27 +1244,20 @@ export function ClassBoardApp() {
               <>
                 {screen === "dashboard" && (
                   <div className="space-y-5">
-                    <section className="rounded-[30px] bg-gradient-to-r from-brand-600 to-sky-500 p-6 text-white shadow-panel">
+                    <section className="rounded-[30px] bg-gradient-to-r from-brand-600 to-sky-500 p-5 text-white shadow-panel sm:p-6">
                       <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
                         <div>
                           <div className="flex items-center gap-2 text-sm text-blue-100">
-                            <Home className="h-4 w-4" /> {workspace.name} <span className="opacity-60">|</span>{" "}
-                            {workspace.school_name}
+                            <Home className="h-4 w-4" /> {workspace.name} <span className="opacity-60">|</span> {workspace.school_name}
                           </div>
-
-                          <h2 className="mt-2 text-3xl font-bold">
-                            Olá
-                            {session?.user?.user_metadata?.full_name
-                              ? `, ${String(session.user.user_metadata.full_name)}`
-                              : ""}
-                            !
-                          </h2>
+                          <h2 className="mt-2 text-2xl font-bold sm:text-3xl">Olá, {currentUserName}!</h2>
                         </div>
 
-                        <div className="grid gap-3 sm:grid-cols-3">
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                           <QuickMetric label="Concluídas" value={String(doneCount)} tone="bg-white/15" />
                           <QuickMetric label="Pendentes" value={String(pendingCount)} tone="bg-white/15" />
                           <QuickMetric label="Provas" value={String(upcomingTests.length)} tone="bg-white/15" />
+                          <QuickMetric label="Grupos" value={String(groups.length)} tone="bg-white/15" />
                         </div>
                       </div>
                     </section>
@@ -1113,9 +1266,7 @@ export function ClassBoardApp() {
                       <Panel title="Hoje">
                         <div className="space-y-3">
                           {todayTasks.length ? (
-                            todayTasks.map((task) => (
-                              <TaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />
-                            ))
+                            todayTasks.map((task) => <TaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} groupName={groups.find((group) => group.id === task.group_id)?.name ?? null} />)
                           ) : (
                             <EmptyState text="Nenhuma tarefa para hoje." />
                           )}
@@ -1126,9 +1277,7 @@ export function ClassBoardApp() {
                         <Panel title="Próximas Provas">
                           <div className="space-y-3">
                             {upcomingTests.length ? (
-                              upcomingTests.map((task) => (
-                                <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />
-                              ))
+                              upcomingTests.map((task) => <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} groupName={groups.find((group) => group.id === task.group_id)?.name ?? null} />)
                             ) : (
                               <EmptyState text="Sem provas próximas." />
                             )}
@@ -1138,9 +1287,7 @@ export function ClassBoardApp() {
                         <Panel title="Tarefas Pendentes">
                           <div className="space-y-3">
                             {pendingTasks.length ? (
-                              pendingTasks.map((task) => (
-                                <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />
-                              ))
+                              pendingTasks.map((task) => <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} groupName={groups.find((group) => group.id === task.group_id)?.name ?? null} />)
                             ) : (
                               <EmptyState text="Nenhuma pendência agora." />
                             )}
@@ -1149,17 +1296,17 @@ export function ClassBoardApp() {
                       </div>
                     </div>
 
-                    <Panel title="Resumo da Semana">
-                      <div className="grid gap-4 md:grid-cols-3">
-                        <SummaryCard label="Concluídas" value={doneCount} className="bg-brand-600 text-white" />
-                        <SummaryCard label="Pendentes" value={pendingCount} className="bg-orange-500 text-white" />
-                        <SummaryCard
-                          label="Prova na semana"
-                          value={upcomingTests.length}
-                          className="bg-emerald-500 text-white"
-                        />
-                      </div>
-                    </Panel>
+                    <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+                      <Panel title="Resumo da Semana">
+                        <div className="grid gap-4 md:grid-cols-3">
+                          <SummaryCard label="Concluídas" value={doneCount} className="bg-brand-600 text-white" />
+                          <SummaryCard label="Pendentes" value={pendingCount} className="bg-orange-500 text-white" />
+                          <SummaryCard label="Membros" value={members.length} className="bg-emerald-500 text-white" />
+                        </div>
+                      </Panel>
+
+                      <MembersPanel members={members} />
+                    </div>
                   </div>
                 )}
 
@@ -1178,7 +1325,7 @@ export function ClassBoardApp() {
                           <input
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            placeholder="Buscar por tarefa ou matéria"
+                            placeholder="Buscar por tarefa, matéria ou grupo"
                             className="h-12 w-full rounded-2xl border border-slate-200 pl-11 pr-4"
                           />
                         </div>
@@ -1213,6 +1360,7 @@ export function ClassBoardApp() {
                           <TaskCard
                             key={task.id}
                             task={task}
+                            groupName={groups.find((group) => group.id === task.group_id)?.name ?? null}
                             onToggleChecklist={toggleChecklist}
                             onEdit={() => openEditTask(task)}
                           />
@@ -1228,12 +1376,9 @@ export function ClassBoardApp() {
 
                 {screen === "calendar" && (
                   <Panel title="Calendário">
-                    <div className="grid gap-4 md:grid-cols-5">
+                    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
                       {weeklyCalendar.map((day) => (
-                        <div
-                          key={day.iso}
-                          className="min-h-[200px] rounded-[24px] border border-slate-200 bg-slate-50 p-4"
-                        >
+                        <div key={day.iso} className="min-h-[200px] rounded-[24px] border border-slate-200 bg-slate-50 p-4">
                           <div className="flex items-center justify-between">
                             <div>
                               <p className="font-semibold uppercase text-slate-900">{day.dayLabel}</p>
@@ -1241,7 +1386,6 @@ export function ClassBoardApp() {
                             </div>
                             <CalendarDays className="h-5 w-5 text-slate-400" />
                           </div>
-
                           <div className="mt-5 space-y-3">
                             {day.items.length ? (
                               day.items.map((task) => (
@@ -1276,6 +1420,21 @@ export function ClassBoardApp() {
                       inviteCode={workspace.invite_code}
                       onCopyInvite={copyInviteLink}
                     />
+
+                    <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+                      <GroupsPanel
+                        groups={groups}
+                        groupName={groupName}
+                        setGroupName={setGroupName}
+                        groupDescription={groupDescription}
+                        setGroupDescription={setGroupDescription}
+                        onSubmit={handleCreateGroup}
+                        saving={savingGroup}
+                        deletingGroupId={deletingGroupId}
+                        onDelete={handleDeleteGroup}
+                      />
+                      <MembersPanel members={members} showEmails />
+                    </div>
                   </div>
                 )}
               </>
@@ -1283,6 +1442,10 @@ export function ClassBoardApp() {
           </div>
         </main>
       </div>
+
+      {workspace ? (
+        <MobileBottomNav screen={screen} setScreen={setScreen} onAddTask={openCreateTask} />
+      ) : null}
     </div>
   );
 }
@@ -1305,8 +1468,8 @@ function WorkspaceSetupForm({
   onCopyInvite?: () => Promise<void> | void;
 }) {
   return (
-    <Panel title="Configuração inicial">
-      <form className="grid gap-5 lg:grid-cols-[1fr_0.7fr]" onSubmit={onSubmit}>
+    <Panel title="Configuração do espaço">
+      <form className="grid gap-5 xl:grid-cols-[1fr_0.7fr]" onSubmit={onSubmit}>
         <div className="grid gap-5">
           <label className="grid gap-2">
             <span className="text-sm font-medium text-slate-700">Nome da escola</span>
@@ -1356,7 +1519,7 @@ function WorkspaceSetupForm({
         {showInviteSection ? (
           <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
             <p className="text-sm text-slate-500">Código do convite</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">{inviteCode}</p>
+            <p className="mt-2 break-all text-2xl font-bold text-slate-900">{inviteCode}</p>
             <button
               type="button"
               onClick={() => void onCopyInvite?.()}
@@ -1371,17 +1534,7 @@ function WorkspaceSetupForm({
   );
 }
 
-function SidebarButton({
-  active,
-  label,
-  icon,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  icon: ReactNode;
-  onClick: () => void;
-}) {
+function SidebarButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: ReactNode; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -1396,21 +1549,61 @@ function SidebarButton({
   );
 }
 
+function MobileBottomNav({
+  screen,
+  setScreen,
+  onAddTask,
+}: {
+  screen: Screen;
+  setScreen: (screen: Screen) => void;
+  onAddTask: () => void;
+}) {
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-2 py-2 backdrop-blur xl:hidden">
+      <div className="grid grid-cols-5 gap-2">
+        <BottomButton active={screen === "dashboard"} label="Painel" icon={<Home className="h-5 w-5" />} onClick={() => setScreen("dashboard")} />
+        <BottomButton active={screen === "tasks"} label="Tarefas" icon={<ClipboardList className="h-5 w-5" />} onClick={() => setScreen("tasks")} />
+        <button
+          type="button"
+          onClick={onAddTask}
+          className="inline-flex h-14 flex-col items-center justify-center rounded-2xl bg-brand-600 text-white"
+        >
+          <Plus className="h-5 w-5" />
+          <span className="text-[11px] font-medium">Nova</span>
+        </button>
+        <BottomButton active={screen === "calendar"} label="Agenda" icon={<CalendarDays className="h-5 w-5" />} onClick={() => setScreen("calendar")} />
+        <BottomButton active={screen === "workspace"} label="Espaço" icon={<Settings className="h-5 w-5" />} onClick={() => setScreen("workspace")} />
+      </div>
+    </div>
+  );
+}
+
+function BottomButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex h-14 flex-col items-center justify-center rounded-2xl text-[11px] font-medium ${
+        active ? "bg-brand-50 text-brand-700" : "text-slate-600"
+      }`}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-[30px] bg-white p-6 shadow-panel">
-      <h3 className="text-2xl font-bold text-slate-900">{title}</h3>
+    <section className="rounded-[30px] bg-white p-5 shadow-panel sm:p-6">
+      <h3 className="text-xl font-bold text-slate-900 sm:text-2xl">{title}</h3>
       <div className="mt-5">{children}</div>
     </section>
   );
 }
 
 function AlertBanner({ tone, message }: { tone: "success" | "error"; message: string }) {
-  const toneClasses =
-    tone === "success"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-      : "border-red-200 bg-red-50 text-red-700";
-
+  const toneClasses = tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700";
   return (
     <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 text-sm font-medium ${toneClasses}`}>
       <AlertCircle className="h-4 w-4" /> {message}
@@ -1421,35 +1614,32 @@ function AlertBanner({ tone, message }: { tone: "success" | "error"; message: st
 function QuickMetric({ label, value, tone }: { label: string; value: string; tone: string }) {
   return (
     <div className={`rounded-[24px] px-5 py-4 ${tone}`}>
-      <p className="text-4xl font-bold">{value}</p>
-      <p className="mt-1 text-lg">{label}</p>
+      <p className="text-3xl font-bold sm:text-4xl">{value}</p>
+      <p className="mt-1 text-base sm:text-lg">{label}</p>
     </div>
   );
 }
 
-function TaskRow({ task, onEdit }: { task: Task; onEdit: () => void }) {
+function TaskRow({ task, onEdit, groupName }: { task: Task; onEdit: () => void; groupName: string | null }) {
   return (
     <button
       type="button"
       onClick={onEdit}
-      className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-4 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
+      className="flex w-full flex-col gap-3 rounded-2xl border border-slate-200 px-4 py-4 text-left transition hover:border-brand-200 hover:bg-brand-50/30 sm:flex-row sm:items-center sm:justify-between"
     >
       <div>
         <p className="font-semibold text-slate-900">{task.title}</p>
-        <p className="mt-1 text-sm text-slate-500">{task.subject}</p>
+        <p className="mt-1 text-sm text-slate-500">{task.subject}{groupName ? ` • ${groupName}` : ""}</p>
       </div>
-
       <div className="flex items-center gap-3">
-        <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>
-          {humanDueLabel(task.due_date)}
-        </span>
+        <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>{humanDueLabel(task.due_date)}</span>
         <Pencil className="h-4 w-4 text-slate-400" />
       </div>
     </button>
   );
 }
 
-function CompactTaskRow({ task, onEdit }: { task: Task; onEdit: () => void }) {
+function CompactTaskRow({ task, onEdit, groupName }: { task: Task; onEdit: () => void; groupName: string | null }) {
   return (
     <button
       type="button"
@@ -1457,12 +1647,12 @@ function CompactTaskRow({ task, onEdit }: { task: Task; onEdit: () => void }) {
       className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-4 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
     >
       <div>
-        <p className="text-xl font-semibold text-slate-900">{task.subject}</p>
+        <p className="text-lg font-semibold text-slate-900 sm:text-xl">{task.subject}</p>
         <p className="text-slate-500">{task.title}</p>
+        {groupName ? <p className="text-sm text-slate-400">{groupName}</p> : null}
       </div>
-
       <div className="text-right">
-        <p className="text-2xl font-bold text-brand-600">{humanDueLabel(task.due_date).replace("Em ", "")}</p>
+        <p className="text-xl font-bold text-brand-600 sm:text-2xl">{humanDueLabel(task.due_date).replace("Em ", "")}</p>
         <p className="text-sm text-slate-400">{formatDate(task.due_date)}</p>
       </div>
     </button>
@@ -1471,67 +1661,145 @@ function CompactTaskRow({ task, onEdit }: { task: Task; onEdit: () => void }) {
 
 function SummaryCard({ label, value, className }: { label: string; value: number; className: string }) {
   return (
-    <div className={`rounded-[28px] p-6 ${className}`}>
-      <p className="text-5xl font-bold">{value}</p>
-      <p className="mt-2 text-2xl">{label}</p>
+    <div className={`rounded-[28px] p-5 sm:p-6 ${className}`}>
+      <p className="text-4xl font-bold sm:text-5xl">{value}</p>
+      <p className="mt-2 text-xl sm:text-2xl">{label}</p>
     </div>
   );
 }
 
 function EmptyState({ text, compact = false }: { text: string; compact?: boolean }) {
+  return <div className={`rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-500 ${compact ? "px-4 py-3 text-sm" : "px-5 py-10"}`}>{text}</div>;
+}
+
+function MembersPanel({ members, showEmails = false }: { members: WorkspaceMember[]; showEmails?: boolean }) {
   return (
-    <div
-      className={`rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-500 ${
-        compact ? "px-4 py-3 text-sm" : "px-5 py-10"
-      }`}
-    >
-      {text}
-    </div>
+    <Panel title="Membros">
+      <div className="space-y-3">
+        {members.length ? (
+          members.map((member) => (
+            <div key={member.id} className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
+              <div>
+                <p className="font-medium text-slate-900">{member.profile?.full_name || member.profile?.email || member.user_id}</p>
+                {showEmails && member.profile?.email ? <p className="text-sm text-slate-500">{member.profile.email}</p> : null}
+              </div>
+              <span className="rounded-xl bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{formatRole(member.role)}</span>
+            </div>
+          ))
+        ) : (
+          <EmptyState text="Nenhum membro encontrado." compact />
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function GroupsPanel({
+  groups,
+  groupName,
+  setGroupName,
+  groupDescription,
+  setGroupDescription,
+  onSubmit,
+  saving,
+  deletingGroupId,
+  onDelete,
+}: {
+  groups: WorkspaceGroup[];
+  groupName: string;
+  setGroupName: (value: string) => void;
+  groupDescription: string;
+  setGroupDescription: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> | void;
+  saving: boolean;
+  deletingGroupId: string | null;
+  onDelete: (group: WorkspaceGroup) => Promise<void> | void;
+}) {
+  return (
+    <Panel title="Grupos internos">
+      <form className="grid gap-3" onSubmit={onSubmit}>
+        <input
+          value={groupName}
+          onChange={(e) => setGroupName(e.target.value)}
+          className="h-12 rounded-2xl border border-slate-200 px-4"
+          placeholder="Nome do grupo"
+        />
+        <textarea
+          value={groupDescription}
+          onChange={(e) => setGroupDescription(e.target.value)}
+          className="min-h-[96px] rounded-2xl border border-slate-200 px-4 py-3"
+          placeholder="Descrição opcional"
+        />
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={saving}
+            className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {saving ? "Salvando..." : "Criar grupo"}
+          </button>
+        </div>
+      </form>
+
+      <div className="mt-5 space-y-3">
+        {groups.length ? (
+          groups.map((group) => (
+            <div key={group.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 px-4 py-4">
+              <div>
+                <p className="font-semibold text-slate-900">{group.name}</p>
+                {group.description ? <p className="mt-1 text-sm text-slate-500">{group.description}</p> : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => void onDelete(group)}
+                disabled={deletingGroupId === group.id}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))
+        ) : (
+          <EmptyState text="Nenhum grupo criado." compact />
+        )}
+      </div>
+    </Panel>
   );
 }
 
 function TaskCard({
   task,
+  groupName,
   onToggleChecklist,
   onEdit,
 }: {
   task: Task;
+  groupName: string | null;
   onToggleChecklist: (task: Task, item: ChecklistItem) => Promise<void> | void;
   onEdit: () => void;
 }) {
   const progress = calculateProgress(task.checklist_items);
 
   return (
-    <section className="rounded-[30px] bg-white p-6 shadow-panel">
+    <section className="rounded-[30px] bg-white p-5 shadow-panel sm:p-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="mb-3 flex flex-wrap gap-2">
-            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapPriority(task.priority)}`}>
-              {task.priority}
-            </span>
-            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>
-              {humanDueLabel(task.due_date)}
-            </span>
-            <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-700">
-              {statusLabel(task.status)}
-            </span>
+            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapPriority(task.priority)}`}>{task.priority}</span>
+            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>{humanDueLabel(task.due_date)}</span>
+            <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-700">{statusLabel(task.status)}</span>
+            {groupName ? <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-700">{groupName}</span> : null}
           </div>
-
-          <h3 className="text-2xl font-bold text-slate-900">{task.title}</h3>
-          <p className="mt-1 text-slate-500">
-            {task.subject} • {typeLabel(task.task_type)}
-          </p>
+          <h3 className="text-xl font-bold text-slate-900 sm:text-2xl">{task.title}</h3>
+          <p className="mt-1 text-slate-500">{task.subject} • {typeLabel(task.task_type)}</p>
         </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onEdit}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 text-slate-600 transition hover:bg-slate-50"
-          >
-            <Pencil className="h-4 w-4" />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onEdit}
+          className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+        >
+          <Pencil className="h-4 w-4" />
+        </button>
       </div>
 
       <div className="mt-5">
@@ -1539,7 +1807,6 @@ function TaskCard({
           <span className="text-slate-600">Progresso</span>
           <span className="font-semibold text-slate-900">{progress}%</span>
         </div>
-
         <div className="h-2 rounded-full bg-slate-100">
           <div className="h-2 rounded-full bg-brand-600 transition-all" style={{ width: `${progress}%` }} />
         </div>
@@ -1556,9 +1823,7 @@ function TaskCard({
               onClick={() => void onToggleChecklist(task, item)}
               className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-3 text-left transition hover:bg-slate-50"
             >
-              <span className={`${item.is_done ? "text-slate-400 line-through" : "text-slate-700"}`}>
-                {item.content}
-              </span>
+              <span className={`${item.is_done ? "text-slate-400 line-through" : "text-slate-700"}`}>{item.content}</span>
               <CheckCircle2 className={`h-5 w-5 ${item.is_done ? "text-emerald-500" : "text-slate-300"}`} />
             </button>
           ))
