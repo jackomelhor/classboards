@@ -1,109 +1,66 @@
-# ClassBoard — versão revisada
+# ClassBoard v3
 
-Web app em **Next.js + TypeScript + Tailwind + Supabase**.
+## O que mudou
+- plano Individual Gratuito com limitações
+- planos Grupo e Turma com liberação manual
+- painel admin para liberar ou inativar planos
+- convite por link validado no servidor
+- grupos internos por plano
+- contato do proprietário via Instagram
+- ajustes para uso mobile
 
-## O que esta versão já cobre
-
-- login e cadastro por email e senha
-- validação de email duplicado antes do cadastro
-- tela de configuração inicial após o login
-- dashboard escolar
-- criação, edição e exclusão de tarefas
-- checklist por tarefa
-- prioridade e urgência por prazo
-- calendário semanal
-- configuração da turma
-- convite por link
-- anexo em tarefa usando Supabase Storage
-- lembretes locais no navegador para tarefas em 3 dias, 1 dia e no dia
-- grupos internos dentro da turma
-- associação de tarefas a grupos
-- lista de membros do workspace
-- navegação mobile com barra inferior
-- modal de tarefa adaptado para celular
-
-## Antes de testar
-
-### 1) Dependências
-
-```bash
-npm install
-```
-
-### 2) Variáveis de ambiente
-
-Copie `.env.example` para `.env.local` e preencha:
+## Variáveis de ambiente
+Crie um arquivo `.env.local` com:
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=https://SEU-PROJETO.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=SUA_CHAVE_PUBLICA
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+ADMIN_EMAILS=
 ```
 
-### 3) Banco de dados
+### ADMIN_EMAILS
+Coloque o email do administrador que poderá liberar planos manualmente.
+Se tiver mais de um, separe por vírgula.
 
-No Supabase, abra o **SQL Editor** e execute todo o conteúdo de `supabase/schema.sql`.
+Exemplo:
 
-Essa versão adiciona:
+```env
+ADMIN_EMAILS=voce@email.com,outro@email.com
+```
 
-- `user_profiles`
-- `groups`
-- `group_members`
-- `tasks.group_id`
-- função `email_exists(candidate_email)`
-- trigger para manter perfis sincronizados com `auth.users`
-
-### 4) Desligar o email de verificação
-
-Isso **não é feito por código do front-end**. Você precisa desligar no painel do Supabase:
-
-- **Authentication**
-- **Providers**
-- **Email**
-- desligar **Confirm email**
-
-Sem isso, o Supabase continua podendo exigir confirmação por email.
+## Supabase
+1. Crie o projeto
+2. Rode `supabase/schema.sql` no SQL Editor
+3. Desligue `Authentication > Providers > Email > Confirm email`
+4. Crie o bucket `task-files` se ele não existir após o SQL
 
 ## Rodar localmente
-
 ```bash
+npm install
+npm run build
 npm run dev
 ```
 
-Abra:
-
-```bash
-http://localhost:3000
-```
-
-## Teste de produção local
-
-Antes de subir para a Vercel, rode:
-
-```bash
-npm run build
-```
-
-Se o build passar localmente, a chance de falha no deploy cai bastante.
-
 ## Deploy na Vercel
+Adicione as mesmas variáveis em `Settings > Environment Variables`:
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `ADMIN_EMAILS`
 
-1. suba o projeto para o GitHub
-2. importe o repositório na Vercel
-3. configure as variáveis `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-4. faça o deploy
+Depois faça novo deploy.
 
-## Atualizando o projeto
+## Fluxo de planos
+- `Individual Gratuito`: ativo imediatamente
+- `Grupo`: fica pendente até o admin liberar
+- `Turma`: fica pendente até o admin liberar
 
-Depois de editar os arquivos:
-
-```bash
-git add .
-git commit -m "Atualiza ClassBoard"
-git push origin main
-```
-
-Se o projeto estiver ligado ao GitHub na Vercel, o deploy novo sai automaticamente.
-
-## Observação importante
-
-Esta versão está bem mais sólida do que a anterior, mas cobrança, assinaturas e webhooks de pagamento ainda precisam de uma camada backend dedicada antes de virar produto comercial fechado.
+## Painel admin
+O painel aparece para os emails definidos em `ADMIN_EMAILS`.
+Nele você consegue:
+- liberar plano Individual Gratuito
+- liberar plano Grupo
+- liberar plano Turma
+- deixar pendente
+- inativar

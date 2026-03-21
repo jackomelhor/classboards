@@ -1,3 +1,5 @@
+import type { PlanCode, PlanStatus } from "@/lib/plans";
+
 export type Priority = "alta" | "media" | "baixa";
 export type TaskStatus = "pendente" | "em_andamento" | "concluida";
 export type TaskType = "prova" | "trabalho" | "atividade" | "apresentacao";
@@ -75,4 +77,23 @@ export type TaskFormValues = {
   checklistRaw: string;
   groupId: string;
   file: File | null;
+};
+
+export type WorkspacePlan = {
+  id: string;
+  workspace_id: string;
+  plan_code: PlanCode;
+  status: PlanStatus;
+  notes: string | null;
+  granted_by: string | null;
+  requested_at?: string;
+  activated_at?: string | null;
+  updated_at?: string;
+};
+
+export type AdminWorkspaceRow = {
+  workspace: Workspace;
+  ownerProfile: UserProfile | null;
+  plan: WorkspacePlan | null;
+  memberCount: number;
 };

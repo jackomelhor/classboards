@@ -10,35 +10,43 @@ import {
   CheckCircle2,
   ClipboardList,
   Copy,
+  Crown,
   Home,
+  Instagram,
+  LayoutDashboard,
   Link2,
   Loader2,
   LogOut,
   Mail,
+  Menu,
   Pencil,
   Plus,
   Search,
   Settings,
+  Shield,
   Trash2,
   Users,
+  X,
 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase/client";
+import { PLAN_DEFINITIONS, PLAN_ORDER, getPlanDefinition, type PlanCode, type PlanStatus } from "@/lib/plans";
 import type {
+  AdminWorkspaceRow,
   ChecklistItem,
   Priority,
   Task,
   TaskFormValues,
   TaskStatus,
-  TaskType,
   UserProfile,
   Workspace,
   WorkspaceGroup,
   WorkspaceMember,
+  WorkspacePlan,
   WorkspaceType,
 } from "@/lib/types";
 import { TaskForm } from "@/components/task-form";
 
-type Screen = "dashboard" | "tasks" | "calendar" | "workspace";
+type Screen = "plans" | "dashboard" | "tasks" | "calendar" | "workspace" | "admin";
 type AuthMode = "signin" | "signup";
 
 type WorkspaceMembershipQuery = {
@@ -50,13 +58,23 @@ type WorkspaceMembershipQuery = {
 type WorkspaceFormValues = {
   schoolName: string;
   className: string;
-  workspaceType: WorkspaceType;
 };
+
+type GroupFormValues = {
+  name: string;
+  description: string;
+};
+
+const INSTAGRAM_URL = "https://instagram.com/vt_.rodrxgs";
 
 const emptyWorkspaceForm: WorkspaceFormValues = {
   schoolName: "",
   className: "",
-  workspaceType: "turma",
+};
+
+const emptyGroupForm: GroupFormValues = {
+  name: "",
+  description: "",
 };
 
 function createLocalSession(name: string): Session {
@@ -71,6 +89,7 @@ function createLocalSession(name: string): Session {
       app_metadata: {},
       user_metadata: { full_name: name || "Usuário" },
       created_at: new Date().toISOString(),
+      email: "local@demo.app",
     },
   } as unknown as Session;
 }
@@ -126,16 +145,6 @@ function statusLabel(status: TaskStatus) {
   return labels[status];
 }
 
-function typeLabel(type: TaskType) {
-  const labels: Record<TaskType, string> = {
-    prova: "Prova",
-    trabalho: "Trabalho",
-    atividade: "Atividade",
-    apresentacao: "Apresentação",
-  };
-  return labels[type];
-}
-
 function calculateProgress(items: ChecklistItem[]) {
   if (!items.length) return 0;
   const done = items.filter((item) => item.is_done).length;
@@ -146,7 +155,6 @@ function workspaceToFormValues(workspace: Workspace): WorkspaceFormValues {
   return {
     schoolName: workspace.school_name ?? "",
     className: workspace.name,
-    workspaceType: workspace.workspace_type,
   };
 }
 
@@ -165,16 +173,22 @@ function taskToFormValues(task: Task): TaskFormValues {
   };
 }
 
-function getUserDisplayName(session: Session | null) {
-  const metadataName = session?.user?.user_metadata?.full_name;
-  if (typeof metadataName === "string" && metadataName.trim()) return metadataName.trim();
-  const email = session?.user?.email;
-  if (email) return email.split("@")[0];
-  return "usuário";
-}
+function normalizePlan(workspace: Workspace | null, plan: WorkspacePlan | null): WorkspacePlan | null {
+  if (plan) return plan;
+  if (!workspace) return null;
 
-function formatRole(role: WorkspaceMember["role"]) {
-  return role === "owner" ? "Dono" : "Membro";
+  if (workspace.workspace_type === "individual") {
+    return {
+      id: `local-${workspace.id}`,
+      workspace_id: workspace.id,
+      plan_code: "individual_free",
+      status: "active",
+      notes: null,
+      granted_by: null,
+    };
+  }
+
+  return null;
 }
 
 async function uploadAttachment(file: File, userId: string) {
@@ -195,40 +209,59 @@ async function uploadAttachment(file: File, userId: string) {
   };
 }
 
+function useNotificationPermission() {
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
+  );
+
+  useEffect(() => {
+    setNotificationPermission(
+      typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
+    );
+  }, []);
+
+  return { notificationPermission, setNotificationPermission };
+}
+
 export function ClassBoardApp() {
   const localMode = !isSupabaseConfigured || !supabase;
 
   const [session, setSession] = useState<Session | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
-  const [screen, setScreen] = useState<Screen>("dashboard");
+  const [screen, setScreen] = useState<Screen>("plans");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
-  const [loadingAuth, setLoadingAuth] = useState(true);
-  const [submittingAuth, setSubmittingAuth] = useState(false);
-  const [loadingData, setLoadingData] = useState(false);
-  const [workspace, setWorkspace] = useState<Workspace | null>(null);
-  const [members, setMembers] = useState<WorkspaceMember[]>([]);
-  const [groups, setGroups] = useState<WorkspaceGroup[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [selectedPlanCode, setSelectedPlanCode] = useState<PlanCode>("individual_free");
   const [workspaceForm, setWorkspaceForm] = useState<WorkspaceFormValues>(emptyWorkspaceForm);
-  const [savingWorkspace, setSavingWorkspace] = useState(false);
+  const [groupForm, setGroupForm] = useState<GroupFormValues>(emptyGroupForm);
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspacePlan, setWorkspacePlan] = useState<WorkspacePlan | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [groups, setGroups] = useState<WorkspaceGroup[]>([]);
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [taskFormMode, setTaskFormMode] = useState<"create" | "edit">("create");
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [savingTask, setSavingTask] = useState(false);
-  const [deletingTask, setDeletingTask] = useState(false);
   const [taskFilter, setTaskFilter] = useState<"todos" | "proximas" | "provas" | "concluidas">("todos");
   const [search, setSearch] = useState("");
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [submittingAuth, setSubmittingAuth] = useState(false);
+  const [loadingData, setLoadingData] = useState(false);
+  const [savingWorkspace, setSavingWorkspace] = useState(false);
+  const [savingTask, setSavingTask] = useState(false);
+  const [deletingTask, setDeletingTask] = useState(false);
+  const [savingGroup, setSavingGroup] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
-    typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
-  );
-  const [groupName, setGroupName] = useState("");
-  const [groupDescription, setGroupDescription] = useState("");
-  const [savingGroup, setSavingGroup] = useState(false);
-  const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminRows, setAdminRows] = useState<AdminWorkspaceRow[]>([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminSavingWorkspaceId, setAdminSavingWorkspaceId] = useState<string | null>(null);
+  const [adminSearch, setAdminSearch] = useState("");
+
+  const { notificationPermission, setNotificationPermission } = useNotificationPermission();
 
   useEffect(() => {
     if (localMode || !supabase) {
@@ -256,48 +289,55 @@ export function ClassBoardApp() {
   }, [localMode]);
 
   useEffect(() => {
-    if (localMode) return;
-
     if (!session?.user) {
       setWorkspace(null);
-      setMembers([]);
-      setGroups([]);
+      setWorkspacePlan(null);
       setTasks([]);
-      setWorkspaceForm(emptyWorkspaceForm);
+      setGroups([]);
+      setMembers([]);
+      setIsAdmin(false);
+      setAdminRows([]);
       return;
     }
 
     void bootstrapWorkspace(session.user);
+    if (!localMode) {
+      void loadAdminRows();
+    }
   }, [localMode, session?.user?.id]);
 
   useEffect(() => {
-    setNotificationPermission(
-      typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
-    );
-  }, []);
+    if (notificationPermission !== "granted" || !tasks.length) return;
 
-  useEffect(() => {
-    if (notificationPermission !== "granted") return;
-    if (!tasks.length) return;
-    if (typeof window === "undefined") return;
+    const cacheKey = `classboard-notified-${new Date().toISOString().slice(0, 10)}`;
+    const notified = typeof window !== "undefined" ? window.sessionStorage.getItem(cacheKey) : null;
+    if (notified) return;
 
-    const priorityWindows = [0, 1, 3];
-    const dueSoon = tasks.filter(
-      (task) => priorityWindows.includes(diffInDays(task.due_date)) && task.status !== "concluida"
-    );
+    const dueSoon = tasks.filter((task) => {
+      const diff = diffInDays(task.due_date);
+      return (diff === 3 || diff === 1 || diff === 0) && task.status !== "concluida";
+    });
+
     if (!dueSoon.length) return;
 
-    dueSoon.sort((a, b) => diffInDays(a.due_date) - diffInDays(b.due_date));
-    const nextTask = dueSoon[0];
-    const days = diffInDays(nextTask.due_date);
-    const cacheKey = `classboard-notified-${nextTask.id}-${days}`;
-    if (window.sessionStorage.getItem(cacheKey)) return;
-
+    const task = dueSoon[0];
     new Notification("ClassBoard", {
-      body: `${nextTask.title} • ${humanDueLabel(nextTask.due_date)}`,
+      body: `${task.title} • ${humanDueLabel(task.due_date)}`,
     });
-    window.sessionStorage.setItem(cacheKey, "1");
+
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(cacheKey, "1");
+    }
   }, [notificationPermission, tasks]);
+
+  const activePlan = normalizePlan(workspace, workspacePlan);
+  const planDefinition = getPlanDefinition(activePlan?.plan_code ?? selectedPlanCode);
+  const accessGranted = Boolean(activePlan && activePlan.status === "active");
+  const activeTaskCount = useMemo(() => tasks.filter((task) => task.status !== "concluida").length, [tasks]);
+  const canUseGroups = Boolean(accessGranted && planDefinition?.features.groups);
+  const canUseAttachments = Boolean(accessGranted && planDefinition?.features.attachments);
+  const canInviteMembers = Boolean(accessGranted && planDefinition?.limits.maxMembers && planDefinition.limits.maxMembers > 1);
+  const taskLimitReached = Boolean(planDefinition && activeTaskCount >= planDefinition.limits.maxActiveTasks);
 
   const todayTasks = useMemo(() => tasks.filter((task) => diffInDays(task.due_date) === 0), [tasks]);
   const upcomingTests = useMemo(
@@ -310,9 +350,9 @@ export function ClassBoardApp() {
   );
   const doneCount = useMemo(() => tasks.filter((task) => task.status === "concluida").length, [tasks]);
   const pendingCount = useMemo(() => tasks.filter((task) => task.status !== "concluida").length, [tasks]);
+
   const weeklyCalendar = useMemo(() => {
     const weekStart = startOfWeek();
-
     return Array.from({ length: 5 }).map((_, index) => {
       const current = new Date(weekStart);
       current.setDate(weekStart.getDate() + index);
@@ -322,21 +362,36 @@ export function ClassBoardApp() {
       return { iso, dayLabel, items };
     });
   }, [tasks]);
+
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
-      const groupNameLookup = groups.find((group) => group.id === task.group_id)?.name ?? "";
-      const matchesSearch = `${task.title} ${task.subject} ${groupNameLookup}`
-        .toLowerCase()
-        .includes(search.toLowerCase());
+      const matchesSearch = `${task.title} ${task.subject}`.toLowerCase().includes(search.toLowerCase());
       if (!matchesSearch) return false;
       if (taskFilter === "proximas") return diffInDays(task.due_date) <= 3;
       if (taskFilter === "provas") return task.task_type === "prova";
       if (taskFilter === "concluidas") return task.status === "concluida";
       return true;
     });
-  }, [groups, tasks, search, taskFilter]);
+  }, [search, taskFilter, tasks]);
+
+  const filteredAdminRows = useMemo(() => {
+    const term = adminSearch.trim().toLowerCase();
+    if (!term) return adminRows;
+    return adminRows.filter((row) => {
+      const owner = row.ownerProfile?.email ?? "";
+      const ownerName = row.ownerProfile?.full_name ?? "";
+      const workspaceName = row.workspace.name;
+      const school = row.workspace.school_name ?? "";
+      return `${owner} ${ownerName} ${workspaceName} ${school}`.toLowerCase().includes(term);
+    });
+  }, [adminRows, adminSearch]);
 
   async function bootstrapWorkspace(user: User) {
+    if (localMode) {
+      setScreen("plans");
+      return;
+    }
+
     const client = supabase;
     if (!client) return;
 
@@ -348,7 +403,6 @@ export function ClassBoardApp() {
         .from("workspace_members")
         .select("workspace_id, role, workspaces(*)")
         .eq("user_id", user.id)
-        .order("created_at", { ascending: true })
         .limit(1);
 
       if (membershipQuery.error) throw membershipQuery.error;
@@ -356,31 +410,46 @@ export function ClassBoardApp() {
       const row = membershipQuery.data?.[0] as WorkspaceMembershipQuery | undefined;
       if (!row) {
         setWorkspace(null);
-        setMembers([]);
-        setGroups([]);
+        setWorkspacePlan(null);
         setTasks([]);
+        setGroups([]);
+        setMembers([]);
         setWorkspaceForm(emptyWorkspaceForm);
-        setScreen("workspace");
+        setSelectedPlanCode("individual_free");
+        setScreen("plans");
         return;
       }
 
       const currentWorkspace = Array.isArray(row.workspaces) ? row.workspaces[0] : row.workspaces;
-      setWorkspace(currentWorkspace ?? null);
-
-      if (currentWorkspace) {
-        setWorkspaceForm(workspaceToFormValues(currentWorkspace));
-        await loadWorkspaceBundle(currentWorkspace.id);
+      if (!currentWorkspace) {
+        setScreen("plans");
+        return;
       }
+
+      setWorkspace(currentWorkspace);
+      setWorkspaceForm(workspaceToFormValues(currentWorkspace));
+
+      const [planResponse] = await Promise.all([
+        client.from("workspace_plans").select("*").eq("workspace_id", currentWorkspace.id).maybeSingle(),
+        loadTasks(currentWorkspace.id),
+        loadGroups(currentWorkspace.id),
+        loadMembers(currentWorkspace.id),
+      ]);
+
+      if (planResponse.error) throw planResponse.error;
+      const nextPlan = normalizePlan(currentWorkspace, (planResponse.data as WorkspacePlan | null) ?? null);
+      setWorkspacePlan(nextPlan);
+      if (nextPlan) {
+        setSelectedPlanCode(nextPlan.plan_code);
+      }
+
+      setScreen(nextPlan?.status === "pending" ? "plans" : "dashboard");
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : "Não foi possível carregar os dados.";
       setErrorMessage(nextMessage);
     } finally {
       setLoadingData(false);
     }
-  }
-
-  async function loadWorkspaceBundle(workspaceId: string) {
-    await Promise.all([loadTasks(workspaceId), loadGroups(workspaceId), loadMembers(workspaceId)]);
   }
 
   async function loadTasks(workspaceId: string) {
@@ -409,44 +478,35 @@ export function ClassBoardApp() {
   async function loadGroups(workspaceId: string) {
     const client = supabase;
     if (!client) return;
-
-    const query = await client
-      .from("groups")
-      .select("*")
-      .eq("workspace_id", workspaceId)
-      .order("created_at", { ascending: true });
-
-    if (query.error) throw query.error;
-    setGroups((query.data ?? []) as WorkspaceGroup[]);
+    const response = await client.from("workspace_groups").select("*").eq("workspace_id", workspaceId).order("name");
+    if (response.error) throw response.error;
+    setGroups((response.data ?? []) as WorkspaceGroup[]);
   }
 
   async function loadMembers(workspaceId: string) {
     const client = supabase;
     if (!client) return;
 
-    const membershipQuery = await client
-      .from("workspace_members")
-      .select("id, workspace_id, user_id, role, created_at")
-      .eq("workspace_id", workspaceId)
-      .order("created_at", { ascending: true });
+    const membersRes = await client.from("workspace_members").select("*").eq("workspace_id", workspaceId).order("created_at");
+    if (membersRes.error) throw membersRes.error;
+    const membershipRows = (membersRes.data ?? []) as WorkspaceMember[];
 
-    if (membershipQuery.error) throw membershipQuery.error;
-
-    const rows = (membershipQuery.data ?? []) as WorkspaceMember[];
-    const userIds = [...new Set(rows.map((row) => row.user_id))];
-
-    let profilesMap = new Map<string, UserProfile>();
-
-    if (userIds.length) {
-      const profilesQuery = await client.from("user_profiles").select("*").in("user_id", userIds);
-      if (!profilesQuery.error) {
-        profilesMap = new Map(
-          ((profilesQuery.data ?? []) as UserProfile[]).map((profile) => [profile.user_id, profile])
-        );
-      }
+    const userIds = membershipRows.map((member) => member.user_id);
+    if (!userIds.length) {
+      setMembers([]);
+      return;
     }
 
-    setMembers(rows.map((row) => ({ ...row, profile: profilesMap.get(row.user_id) ?? null })));
+    const profilesRes = await client.from("user_profiles").select("*").in("user_id", userIds);
+    if (profilesRes.error) throw profilesRes.error;
+
+    const profiles = new Map(((profilesRes.data ?? []) as UserProfile[]).map((profile) => [profile.user_id, profile]));
+    setMembers(
+      membershipRows.map((member) => ({
+        ...member,
+        profile: profiles.get(member.user_id) ?? null,
+      }))
+    );
   }
 
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
@@ -462,52 +522,43 @@ export function ClassBoardApp() {
       }
 
       const client = supabase;
-      if (!client) throw new Error("Supabase não configurado.");
+      if (!client) {
+        throw new Error("Supabase não configurado.");
+      }
 
       if (authMode === "signup") {
-        const check = await client.rpc("email_exists", { candidate_email: email.trim().toLowerCase() });
-        if (!check.error && check.data) {
-          throw new Error("Este email já tem conta. Use Entrar.");
+        const existsResponse = await client.rpc("email_exists", { candidate_email: email.trim().toLowerCase() });
+        if (existsResponse.error) throw existsResponse.error;
+        if (existsResponse.data) {
+          throw new Error("Este email já tem conta. Faça login para continuar.");
         }
 
         const response = await client.auth.signUp({
-          email: email.trim().toLowerCase(),
+          email,
           password,
           options: {
             data: {
-              full_name: fullName.trim(),
+              full_name: fullName,
             },
           },
         });
 
         if (response.error) {
-          if (/already registered|already been registered|user already registered/i.test(response.error.message)) {
-            throw new Error("Este email já tem conta. Use Entrar.");
+          if (response.error.message.toLowerCase().includes("already registered")) {
+            throw new Error("Este email já tem conta. Faça login para continuar.");
           }
           throw response.error;
         }
 
         if (response.data.session) {
           setSession(response.data.session);
-          setEmail("");
-          setPassword("");
         } else {
-          setMessage(
-            "Conta criada. Para entrar sem email de verificação, desative Confirm email no Supabase e tente novamente."
-          );
+          setMessage("Conta criada. Faça login para continuar.");
+          setAuthMode("signin");
         }
       } else {
-        const response = await client.auth.signInWithPassword({
-          email: email.trim().toLowerCase(),
-          password,
-        });
-
-        if (response.error) {
-          if (/invalid login credentials/i.test(response.error.message)) {
-            throw new Error("Email ou senha inválidos.");
-          }
-          throw response.error;
-        }
+        const response = await client.auth.signInWithPassword({ email, password });
+        if (response.error) throw response.error;
       }
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : "Não foi possível autenticar.";
@@ -520,14 +571,17 @@ export function ClassBoardApp() {
   async function handleSignOut() {
     setMessage(null);
     setErrorMessage(null);
+    setMobileMenuOpen(false);
 
     if (localMode) {
       setSession(null);
       setWorkspace(null);
-      setMembers([]);
-      setGroups([]);
+      setWorkspacePlan(null);
       setTasks([]);
+      setGroups([]);
+      setMembers([]);
       setWorkspaceForm(emptyWorkspaceForm);
+      setScreen("plans");
       return;
     }
 
@@ -538,11 +592,14 @@ export function ClassBoardApp() {
     }
 
     await client.auth.signOut();
+    setSession(null);
     setWorkspace(null);
-    setMembers([]);
-    setGroups([]);
+    setWorkspacePlan(null);
     setTasks([]);
+    setGroups([]);
+    setMembers([]);
     setWorkspaceForm(emptyWorkspaceForm);
+    setScreen("plans");
   }
 
   async function handleSaveWorkspace(event?: FormEvent<HTMLFormElement>) {
@@ -552,15 +609,24 @@ export function ClassBoardApp() {
     setMessage(null);
 
     try {
+      const currentPlan = PLAN_DEFINITIONS[selectedPlanCode];
       const payload = {
         school_name: workspaceForm.schoolName.trim() || null,
         name: workspaceForm.className.trim(),
-        workspace_type: workspaceForm.workspaceType,
+        workspace_type: currentPlan.workspaceType as WorkspaceType,
       };
 
       if (!payload.name) {
-        throw new Error("Informe o nome da turma, grupo ou espaço individual.");
+        throw new Error("Informe o nome do espaço.");
       }
+
+      const isSamePaidPlan = workspacePlan?.plan_code === selectedPlanCode && workspacePlan?.status === "active";
+      const nextStatus: PlanStatus = currentPlan.isFree ? "active" : isSamePaidPlan ? "active" : "pending";
+      const nextNotes = currentPlan.isFree
+        ? null
+        : isSamePaidPlan
+        ? workspacePlan?.notes ?? "Plano liberado manualmente pelo proprietário."
+        : "Solicitação criada pelo usuário.";
 
       if (localMode) {
         const ownerId = session?.user?.id ?? "local-user";
@@ -570,16 +636,37 @@ export function ClassBoardApp() {
           invite_code: workspace?.invite_code ?? Math.random().toString(36).slice(2, 10).toUpperCase(),
           ...payload,
         };
+        const nextPlan: WorkspacePlan = {
+          id: workspacePlan?.id ?? crypto.randomUUID(),
+          workspace_id: nextWorkspace.id,
+          plan_code: selectedPlanCode,
+          status: nextStatus,
+          notes: nextNotes,
+          granted_by: null,
+        };
         setWorkspace(nextWorkspace);
-        setScreen("dashboard");
+        setWorkspacePlan(nextPlan);
+        setMembers([
+          {
+            id: crypto.randomUUID(),
+            workspace_id: nextWorkspace.id,
+            user_id: ownerId,
+            role: "owner",
+            profile: {
+              user_id: ownerId,
+              full_name: fullName || "Usuário",
+              email: "local@demo.app",
+            },
+          },
+        ]);
+        setScreen(nextStatus === "active" ? "dashboard" : "plans");
+        setMessage(currentPlan.isFree ? "Espaço criado." : "Solicitação enviada para análise manual.");
         return;
       }
 
       const client = supabase;
       const currentUserId = session?.user?.id;
-      if (!currentUserId || !client) {
-        throw new Error("Sessão não encontrada.");
-      }
+      if (!currentUserId || !client) throw new Error("Sessão não encontrada.");
 
       if (!workspace) {
         const insertedWorkspace = await client
@@ -587,7 +674,6 @@ export function ClassBoardApp() {
           .insert({ owner_id: currentUserId, ...payload })
           .select("*")
           .single();
-
         if (insertedWorkspace.error) throw insertedWorkspace.error;
 
         const insertedMembership = await client.from("workspace_members").insert({
@@ -597,11 +683,22 @@ export function ClassBoardApp() {
         });
         if (insertedMembership.error) throw insertedMembership.error;
 
+        const insertedPlan = await client
+          .from("workspace_plans")
+          .insert({
+            workspace_id: insertedWorkspace.data.id,
+            plan_code: selectedPlanCode,
+            status: nextStatus,
+            notes: nextNotes,
+          })
+          .select("*")
+          .single();
+        if (insertedPlan.error) throw insertedPlan.error;
+
         setWorkspace(insertedWorkspace.data as Workspace);
+        setWorkspacePlan(insertedPlan.data as WorkspacePlan);
         setWorkspaceForm(workspaceToFormValues(insertedWorkspace.data as Workspace));
-        setTasks([]);
-        setGroups([]);
-        setMembers([]);
+        await loadMembers(insertedWorkspace.data.id);
       } else {
         const updatedWorkspace = await client
           .from("workspaces")
@@ -609,96 +706,48 @@ export function ClassBoardApp() {
           .eq("id", workspace.id)
           .select("*")
           .single();
-
         if (updatedWorkspace.error) throw updatedWorkspace.error;
+
+        const updatedPlan = await client
+          .from("workspace_plans")
+          .upsert(
+            {
+              workspace_id: workspace.id,
+              plan_code: selectedPlanCode,
+              status: nextStatus,
+              notes: nextNotes,
+              activated_at: nextStatus === "active" ? new Date().toISOString() : null,
+            },
+            { onConflict: "workspace_id" }
+          )
+          .select("*")
+          .single();
+        if (updatedPlan.error) throw updatedPlan.error;
+
         setWorkspace(updatedWorkspace.data as Workspace);
+        setWorkspacePlan(updatedPlan.data as WorkspacePlan);
         setWorkspaceForm(workspaceToFormValues(updatedWorkspace.data as Workspace));
       }
 
-      setMessage("Informações salvas.");
-      setScreen("dashboard");
-      if (workspace?.id) {
-        await loadWorkspaceBundle(workspace.id);
-      }
+      setScreen(nextStatus === "active" ? "dashboard" : "plans");
+      setMessage(currentPlan.isFree ? "Espaço salvo." : "Solicitação enviada para liberação manual.");
     } catch (error) {
-      const nextMessage = error instanceof Error ? error.message : "Não foi possível salvar as informações.";
+      const nextMessage = error instanceof Error ? error.message : "Não foi possível salvar o espaço.";
       setErrorMessage(nextMessage);
     } finally {
       setSavingWorkspace(false);
     }
   }
 
-  async function handleCreateGroup(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!workspace) return;
-
-    setSavingGroup(true);
-    setErrorMessage(null);
-    setMessage(null);
-
-    try {
-      const trimmedName = groupName.trim();
-      if (!trimmedName) throw new Error("Informe o nome do grupo.");
-
-      if (localMode || !supabase || !session?.user) {
-        const nextGroup: WorkspaceGroup = {
-          id: crypto.randomUUID(),
-          workspace_id: workspace.id,
-          created_by: session?.user?.id ?? "local-user",
-          name: trimmedName,
-          description: groupDescription.trim() || null,
-          created_at: new Date().toISOString(),
-        };
-        setGroups((prev) => [...prev, nextGroup]);
-      } else {
-        const client = supabase;
-        const insert = await client.from("groups").insert({
-          workspace_id: workspace.id,
-          created_by: session.user.id,
-          name: trimmedName,
-          description: groupDescription.trim() || null,
-        });
-        if (insert.error) throw insert.error;
-        await loadGroups(workspace.id);
-      }
-
-      setGroupName("");
-      setGroupDescription("");
-      setMessage("Grupo criado.");
-    } catch (error) {
-      const nextMessage = error instanceof Error ? error.message : "Não foi possível criar o grupo.";
-      setErrorMessage(nextMessage);
-    } finally {
-      setSavingGroup(false);
-    }
-  }
-
-  async function handleDeleteGroup(group: WorkspaceGroup) {
-    if (!workspace) return;
-    setDeletingGroupId(group.id);
-    setErrorMessage(null);
-    setMessage(null);
-
-    try {
-      if (localMode || !supabase) {
-        setGroups((prev) => prev.filter((item) => item.id !== group.id));
-        setTasks((prev) => prev.map((task) => (task.group_id === group.id ? { ...task, group_id: null } : task)));
-      } else {
-        const client = supabase;
-        const deleteGroup = await client.from("groups").delete().eq("id", group.id);
-        if (deleteGroup.error) throw deleteGroup.error;
-        await Promise.all([loadGroups(workspace.id), loadTasks(workspace.id)]);
-      }
-      setMessage("Grupo removido.");
-    } catch (error) {
-      const nextMessage = error instanceof Error ? error.message : "Não foi possível remover o grupo.";
-      setErrorMessage(nextMessage);
-    } finally {
-      setDeletingGroupId(null);
-    }
-  }
-
   function openCreateTask() {
+    if (!accessGranted) {
+      setErrorMessage("Seu plano ainda não está ativo.");
+      return;
+    }
+    if (taskLimitReached) {
+      setErrorMessage("Você atingiu o limite de tarefas do seu plano atual.");
+      return;
+    }
     setTaskFormMode("create");
     setSelectedTask(null);
     setShowTaskForm(true);
@@ -718,9 +767,24 @@ export function ClassBoardApp() {
     setMessage(null);
 
     try {
+      if (!accessGranted) {
+        throw new Error("Plano ainda não ativo.");
+      }
+
+      if (!canUseAttachments && values.file) {
+        throw new Error("Seu plano atual não permite anexos.");
+      }
+
+      if (!canUseGroups && values.groupId) {
+        throw new Error("Seu plano atual não permite grupos.");
+      }
+
+      if (taskFormMode === "create" && taskLimitReached) {
+        throw new Error("Você atingiu o limite de tarefas do seu plano atual.");
+      }
+
       const attachment =
         values.file && session?.user?.id && !localMode ? await uploadAttachment(values.file, session.user.id) : null;
-
       const checklistLines = values.checklistRaw
         .split("\n")
         .map((line) => line.trim())
@@ -765,9 +829,9 @@ export function ClassBoardApp() {
               due_date: values.dueDate,
               priority: values.priority,
               status: values.status,
-              group_id: values.groupId || null,
               attachment_name: attachment?.attachment_name ?? null,
               attachment_url: attachment?.attachment_url ?? null,
+              group_id: values.groupId || null,
             })
             .select("*")
             .single();
@@ -801,8 +865,8 @@ export function ClassBoardApp() {
                       due_date: values.dueDate,
                       priority: values.priority,
                       status: values.status,
-                      group_id: values.groupId || null,
                       attachment_name: values.file?.name ?? task.attachment_name,
+                      group_id: values.groupId || null,
                       checklist_items: checklistLines.map((content, index) => ({
                         id: task.checklist_items[index]?.id ?? crypto.randomUUID(),
                         task_id: task.id,
@@ -826,9 +890,9 @@ export function ClassBoardApp() {
               due_date: values.dueDate,
               priority: values.priority,
               status: values.status,
-              group_id: values.groupId || null,
               attachment_name: attachment?.attachment_name ?? selectedTask.attachment_name,
               attachment_url: attachment?.attachment_url ?? selectedTask.attachment_url,
+              group_id: values.groupId || null,
             })
             .eq("id", selectedTask.id);
           if (updateTask.error) throw updateTask.error;
@@ -864,7 +928,6 @@ export function ClassBoardApp() {
 
   async function handleDeleteTask() {
     if (!selectedTask) return;
-
     setDeletingTask(true);
     setErrorMessage(null);
     setMessage(null);
@@ -880,7 +943,6 @@ export function ClassBoardApp() {
           await loadTasks(workspace.id);
         }
       }
-
       setShowTaskForm(false);
       setSelectedTask(null);
       setMessage("Tarefa excluída.");
@@ -897,7 +959,6 @@ export function ClassBoardApp() {
       const updatedItems = task.checklist_items.map((current) =>
         current.id === item.id ? { ...current, is_done: !current.is_done } : current
       );
-
       const nextStatus: TaskStatus =
         updatedItems.length > 0 && updatedItems.every((entry) => entry.is_done) ? "concluida" : "em_andamento";
 
@@ -905,7 +966,11 @@ export function ClassBoardApp() {
         setTasks((prev) =>
           prev.map((currentTask) =>
             currentTask.id === task.id
-              ? { ...currentTask, status: nextStatus, checklist_items: updatedItems }
+              ? {
+                  ...currentTask,
+                  status: nextStatus,
+                  checklist_items: updatedItems,
+                }
               : currentTask
           )
         );
@@ -913,10 +978,7 @@ export function ClassBoardApp() {
       }
 
       const client = supabase;
-      const checklistUpdate = await client
-        .from("checklist_items")
-        .update({ is_done: !item.is_done })
-        .eq("id", item.id);
+      const checklistUpdate = await client.from("checklist_items").update({ is_done: !item.is_done }).eq("id", item.id);
       if (checklistUpdate.error) throw checklistUpdate.error;
 
       const taskUpdate = await client.from("tasks").update({ status: nextStatus }).eq("id", task.id);
@@ -925,13 +987,70 @@ export function ClassBoardApp() {
       setTasks((prev) =>
         prev.map((currentTask) =>
           currentTask.id === task.id
-            ? { ...currentTask, status: nextStatus, checklist_items: updatedItems }
+            ? {
+                ...currentTask,
+                status: nextStatus,
+                checklist_items: updatedItems,
+              }
             : currentTask
         )
       );
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : "Não foi possível atualizar o checklist.";
       setErrorMessage(nextMessage);
+    }
+  }
+
+  async function handleCreateGroup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingGroup(true);
+    setErrorMessage(null);
+    setMessage(null);
+
+    try {
+      if (!workspace || !planDefinition) {
+        throw new Error("Configure o espaço antes de criar grupos.");
+      }
+      if (!canUseGroups) {
+        throw new Error("Seu plano atual não permite grupos.");
+      }
+      if (groups.length >= planDefinition.limits.maxGroups) {
+        throw new Error("Você atingiu o limite de grupos do seu plano.");
+      }
+      if (!groupForm.name.trim()) {
+        throw new Error("Informe o nome do grupo.");
+      }
+
+      if (localMode || !supabase || !session?.user) {
+        setGroups((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            workspace_id: workspace.id,
+            created_by: session?.user?.id ?? "local-user",
+            name: groupForm.name.trim(),
+            description: groupForm.description.trim() || null,
+          },
+        ]);
+      } else {
+        const client = supabase;
+        const response = await client.from("workspace_groups").insert({
+          workspace_id: workspace.id,
+          created_by: session.user.id,
+          name: groupForm.name.trim(),
+          description: groupForm.description.trim() || null,
+        });
+        if (response.error) throw response.error;
+        await loadGroups(workspace.id);
+      }
+
+      setGroupForm(emptyGroupForm);
+      setMessage("Grupo criado.");
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : "Não foi possível criar o grupo.";
+      setErrorMessage(nextMessage);
+    } finally {
+      setSavingGroup(false);
     }
   }
 
@@ -952,7 +1071,88 @@ export function ClassBoardApp() {
     setMessage("Link copiado.");
   }
 
-  const currentUserName = getUserDisplayName(session);
+  async function loadAdminRows() {
+    if (localMode || !session?.access_token) {
+      setIsAdmin(false);
+      return;
+    }
+
+    setAdminLoading(true);
+    try {
+      const response = await fetch("/api/admin/workspaces", {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (response.status === 403) {
+        setIsAdmin(false);
+        setAdminRows([]);
+        return;
+      }
+
+      const payload = (await response.json()) as { rows?: AdminWorkspaceRow[]; error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Falha ao carregar painel admin.");
+      }
+
+      setIsAdmin(true);
+      setAdminRows(payload.rows ?? []);
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : "Falha ao carregar painel admin.";
+      setErrorMessage(nextMessage);
+    } finally {
+      setAdminLoading(false);
+    }
+  }
+
+  async function handleAdminUpdate(row: AdminWorkspaceRow, planCode: PlanCode, status: PlanStatus) {
+    if (!session?.access_token) return;
+    setAdminSavingWorkspaceId(row.workspace.id);
+    setErrorMessage(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/admin/workspaces", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          workspaceId: row.workspace.id,
+          planCode,
+          status,
+          notes: status === "active" ? "Plano liberado manualmente pelo proprietário." : "Plano em análise manual.",
+        }),
+      });
+
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Falha ao atualizar o plano.");
+      }
+
+      setMessage("Plano atualizado.");
+      await loadAdminRows();
+      if (workspace?.id === row.workspace.id) {
+        await bootstrapWorkspace(session.user);
+      }
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : "Falha ao atualizar o plano.";
+      setErrorMessage(nextMessage);
+    } finally {
+      setAdminSavingWorkspaceId(null);
+    }
+  }
+
+  const navItems: Array<{ id: Screen; label: string; icon: ReactNode; hidden?: boolean }> = [
+    { id: "plans", label: "Planos", icon: <Crown className="h-5 w-5" /> },
+    { id: "dashboard", label: "Painel", icon: <LayoutDashboard className="h-5 w-5" />, hidden: !workspace },
+    { id: "tasks", label: "Tarefas", icon: <ClipboardList className="h-5 w-5" />, hidden: !workspace },
+    { id: "calendar", label: "Calendário", icon: <CalendarDays className="h-5 w-5" />, hidden: !workspace },
+    { id: "workspace", label: "Espaço", icon: <Settings className="h-5 w-5" />, hidden: !workspace },
+    { id: "admin", label: "Admin", icon: <Shield className="h-5 w-5" />, hidden: !isAdmin },
+  ].filter((item) => !item.hidden);
 
   if (loadingAuth) {
     return (
@@ -965,180 +1165,115 @@ export function ClassBoardApp() {
     );
   }
 
-  if (!session?.user && !localMode) {
+  if (!session?.user) {
     return (
-      <div className="auth-grid-bg min-h-screen px-4 py-6 text-white md:px-6 lg:px-8">
-        <div className="mx-auto grid min-h-[92vh] max-w-7xl gap-4 lg:grid-cols-[200px_1fr_0.95fr] lg:gap-6">
-          <aside className="hidden rounded-[30px] border border-white/10 bg-white/5 p-5 backdrop-blur lg:flex lg:flex-col lg:justify-between">
-            <div className="space-y-6">
-              <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-600 shadow-lg shadow-brand-950/40">
-                <BookOpen className="h-5 w-5" />
-              </div>
-
-              <div className="space-y-3">
-                <button
-                  type="button"
-                  onClick={() => setAuthMode("signin")}
-                  className={`flex w-full items-center gap-3 rounded-2xl px-4 py-4 text-left transition ${
-                    authMode === "signin" ? "bg-white/10 text-white" : "text-slate-300 hover:bg-white/5"
-                  }`}
-                >
-                  <Mail className="h-4 w-4" /> Entrar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAuthMode("signup")}
-                  className={`flex w-full items-center gap-3 rounded-2xl px-4 py-4 text-left transition ${
-                    authMode === "signup"
-                      ? "bg-brand-600 text-white shadow-lg shadow-brand-950/40"
-                      : "text-slate-300 hover:bg-white/5"
-                  }`}
-                >
-                  <Users className="h-4 w-4" /> Criar conta
-                </button>
-              </div>
+      <div className="auth-grid-bg min-h-screen px-4 py-6 text-white md:px-8">
+        <div className="mx-auto grid min-h-[92vh] max-w-6xl gap-6 lg:grid-cols-[1.1fr_0.95fr]">
+          <section className="rounded-[32px] border border-white/10 bg-white/5 p-6 backdrop-blur sm:p-8">
+            <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-600 shadow-lg shadow-brand-950/30">
+              <BookOpen className="h-6 w-6" />
             </div>
-          </aside>
-
-          <section className="flex rounded-[34px] border border-white/10 bg-gradient-to-br from-brand-500 via-blue-600 to-sky-500 p-6 shadow-2xl shadow-brand-950/30 sm:p-8">
-            <div className="flex w-full flex-col justify-between gap-8">
-              <div className="space-y-6">
-                <div className="inline-flex w-fit items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm backdrop-blur">
-                  <BookOpen className="h-4 w-4" /> ClassBoard
-                </div>
-                <div className="max-w-xl space-y-4">
-                  <h1 className="text-3xl font-bold leading-tight sm:text-4xl md:text-5xl">
-                    Organização escolar no celular e no computador
-                  </h1>
-                  <p className="max-w-lg text-sm text-blue-100 sm:text-base">
-                    Entre, configure a turma e centralize tarefas, provas, calendário, grupos e convites em um único lugar.
-                  </p>
-                </div>
+            <div className="mt-8 space-y-6">
+              <div>
+                <p className="text-sm text-blue-100">ClassBoard</p>
+                <h1 className="mt-2 text-4xl font-bold sm:text-5xl">Entrar</h1>
               </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                {PLAN_ORDER.map((planCode) => {
+                  const plan = PLAN_DEFINITIONS[planCode];
+                  return (
+                    <div key={plan.code} className="rounded-3xl border border-white/10 bg-white/10 p-4 text-sm text-blue-50">
+                      <p className="font-semibold">{plan.title}</p>
+                      <p className="mt-2 text-xs text-blue-100">{plan.subtitle}</p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <a
+                href={INSTAGRAM_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/15"
+              >
+                <Instagram className="h-4 w-4" /> Falar com o proprietário @vt_.rodrxgs
+              </a>
             </div>
           </section>
 
-          <section className="rounded-[30px] border border-white/10 bg-slate-950/85 p-5 backdrop-blur sm:p-8">
-            <div className="space-y-6">
-              <div className="flex items-center justify-between gap-3 lg:hidden">
-                <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-600 shadow-lg shadow-brand-950/40">
-                  <BookOpen className="h-5 w-5" />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAuthMode("signin")}
-                    className={`rounded-2xl px-4 py-2 text-sm ${
-                      authMode === "signin" ? "bg-white/10 text-white" : "text-slate-300"
-                    }`}
-                  >
-                    Entrar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAuthMode("signup")}
-                    className={`rounded-2xl px-4 py-2 text-sm ${
-                      authMode === "signup" ? "bg-brand-600 text-white" : "text-slate-300"
-                    }`}
-                  >
-                    Criar conta
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <h2 className="mt-1 text-2xl font-bold sm:text-3xl">
-                  {authMode === "signup" ? "Criar conta" : "Entrar"}
-                </h2>
-              </div>
-
-              {message && <AlertBanner tone="success" message={message} />}
-              {errorMessage && <AlertBanner tone="error" message={errorMessage} />}
-
-              <form className="space-y-4" onSubmit={handleAuthSubmit}>
-                {authMode === "signup" && (
-                  <div className="space-y-2">
-                    <label className="text-sm text-slate-300">Nome</label>
-                    <input
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      required={authMode === "signup"}
-                      className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-white placeholder:text-slate-500"
-                      placeholder="João Silva"
-                    />
-                  </div>
-                )}
-
-                <div className="space-y-2">
-                  <label className="text-sm text-slate-300">Email</label>
-                  <input
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    type="email"
-                    className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-white placeholder:text-slate-500"
-                    placeholder="joao@email.com"
-                    autoComplete="email"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm text-slate-300">Senha</label>
-                  <input
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    minLength={6}
-                    type="password"
-                    className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-white placeholder:text-slate-500"
-                    placeholder="******"
-                    autoComplete={authMode === "signup" ? "new-password" : "current-password"}
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={submittingAuth}
-                  className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-brand-600 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {submittingAuth ? "Processando..." : authMode === "signup" ? "Criar conta" : "Entrar"}
-                </button>
-              </form>
+          <section className="rounded-[32px] border border-white/10 bg-slate-950/85 p-6 backdrop-blur sm:p-8">
+            <div className="mb-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setAuthMode("signin")}
+                className={`inline-flex h-11 items-center justify-center rounded-2xl px-4 text-sm font-medium transition ${
+                  authMode === "signin" ? "bg-white text-slate-900" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                }`}
+              >
+                Entrar
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuthMode("signup")}
+                className={`inline-flex h-11 items-center justify-center rounded-2xl px-4 text-sm font-medium transition ${
+                  authMode === "signup" ? "bg-brand-600 text-white" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                }`}
+              >
+                Criar conta
+              </button>
             </div>
-          </section>
-        </div>
-      </div>
-    );
-  }
 
-  if (!session?.user && localMode) {
-    return (
-      <div className="auth-grid-bg min-h-screen px-4 py-6 text-white md:px-8 lg:px-10">
-        <div className="mx-auto flex min-h-[92vh] max-w-xl items-center">
-          <section className="w-full rounded-[30px] border border-white/10 bg-slate-950/85 p-6 backdrop-blur sm:p-8">
-            <div className="space-y-6">
-              <div>
-                <h2 className="mt-1 text-2xl font-bold sm:text-3xl">Entrar</h2>
-              </div>
-              <form className="space-y-4" onSubmit={handleAuthSubmit}>
+            {message && <AlertBanner tone="success" message={message} />}
+            {errorMessage && <AlertBanner tone="error" message={errorMessage} />}
+
+            <form className="mt-6 space-y-4" onSubmit={handleAuthSubmit}>
+              {authMode === "signup" ? (
                 <div className="space-y-2">
                   <label className="text-sm text-slate-300">Nome</label>
                   <input
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
+                    required={authMode === "signup"}
                     className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-white placeholder:text-slate-500"
                     placeholder="Seu nome"
                   />
                 </div>
-                <button
-                  type="submit"
-                  disabled={submittingAuth}
-                  className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-brand-600 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {submittingAuth ? "Processando..." : "Entrar"}
-                </button>
-              </form>
-            </div>
+              ) : null}
+
+              <div className="space-y-2">
+                <label className="text-sm text-slate-300">Email</label>
+                <input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  type="email"
+                  className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-white placeholder:text-slate-500"
+                  placeholder="voce@email.com"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm text-slate-300">Senha</label>
+                <input
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  type="password"
+                  className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 px-4 text-white placeholder:text-slate-500"
+                  placeholder="******"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={submittingAuth}
+                className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-brand-600 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {submittingAuth ? "Processando..." : authMode === "signup" ? "Criar conta" : "Entrar"}
+              </button>
+            </form>
           </section>
         </div>
       </div>
@@ -1160,26 +1295,24 @@ export function ClassBoardApp() {
         onDelete={taskFormMode === "edit" ? handleDeleteTask : null}
         deleting={deletingTask}
         groups={groups}
+        allowGroups={canUseGroups}
+        allowAttachments={canUseAttachments}
       />
 
       <div className="flex min-h-screen">
-        <aside className="hidden w-24 border-r border-slate-200 bg-slate-950 px-4 py-6 text-white xl:flex xl:w-72 xl:flex-col xl:gap-6">
-          <div className="flex items-center gap-3 px-2">
-            <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-600 shadow-lg shadow-brand-950/40">
-              <BookOpen className="h-5 w-5" />
-            </div>
-            <div>
-              <p className="font-semibold">ClassBoard</p>
-            </div>
-          </div>
-
+        <aside className="hidden w-72 border-r border-slate-200 bg-slate-950 px-4 py-6 text-white xl:flex xl:flex-col xl:gap-6">
+          <BrandPanel onContact />
           <nav className="space-y-2">
-            <SidebarButton active={screen === "dashboard"} label="Painel" icon={<Home className="h-5 w-5" />} onClick={() => setScreen("dashboard")} />
-            <SidebarButton active={screen === "tasks"} label="Tarefas" icon={<ClipboardList className="h-5 w-5" />} onClick={() => setScreen("tasks")} />
-            <SidebarButton active={screen === "calendar"} label="Calendário" icon={<CalendarDays className="h-5 w-5" />} onClick={() => setScreen("calendar")} />
-            <SidebarButton active={screen === "workspace"} label="Espaço" icon={<Settings className="h-5 w-5" />} onClick={() => setScreen("workspace")} />
+            {navItems.map((item) => (
+              <SidebarButton
+                key={item.id}
+                active={screen === item.id}
+                label={item.label}
+                icon={item.icon}
+                onClick={() => setScreen(item.id)}
+              />
+            ))}
           </nav>
-
           <button
             type="button"
             onClick={handleSignOut}
@@ -1189,19 +1322,19 @@ export function ClassBoardApp() {
           </button>
         </aside>
 
-        <main className="flex-1 px-4 py-4 pb-24 md:px-6 xl:px-8 xl:pb-8">
+        <main className="flex-1 px-4 pb-28 pt-4 md:px-6 xl:px-8 xl:pb-8 xl:pt-5">
           <div className="mx-auto max-w-7xl space-y-5">
-            <div className="sticky top-0 z-20 rounded-[28px] bg-white/95 p-4 shadow-panel backdrop-blur md:flex md:items-center md:justify-between">
+            <div className="flex items-center justify-between rounded-[28px] bg-white p-4 shadow-panel">
               <div>
                 <p className="text-sm text-slate-500">{workspace?.school_name ?? ""}</p>
-                <h1 className="text-2xl font-bold text-slate-900">{workspace?.name ?? "Configurar espaço"}</h1>
+                <h1 className="text-2xl font-bold text-slate-900">{workspace?.name ?? "ClassBoard"}</h1>
               </div>
-
-              <div className="mt-3 flex flex-wrap items-center gap-3 md:mt-0">
+              <div className="flex items-center gap-3">
+                <PlanBadge plan={activePlan} />
                 <button
                   type="button"
                   onClick={requestNotifications}
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                  className="hidden h-11 items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 md:inline-flex"
                 >
                   <Bell className="h-4 w-4" />
                   {notificationPermission === "granted"
@@ -1212,52 +1345,107 @@ export function ClassBoardApp() {
                     ? "Sem suporte"
                     : "Ativar notificações"}
                 </button>
-                {workspace ? (
-                  <button
-                    type="button"
-                    onClick={openCreateTask}
-                    className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-brand-600 px-4 text-sm font-semibold text-white transition hover:bg-brand-700"
-                  >
-                    <Plus className="h-4 w-4" /> Nova tarefa
-                  </button>
-                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setMobileMenuOpen((prev) => !prev)}
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 text-slate-700 xl:hidden"
+                >
+                  {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+                </button>
               </div>
             </div>
+
+            {mobileMenuOpen ? (
+              <div className="rounded-[28px] bg-white p-4 shadow-panel xl:hidden">
+                <div className="space-y-2">
+                  {navItems.map((item) => (
+                    <SidebarButton
+                      key={item.id}
+                      active={screen === item.id}
+                      label={item.label}
+                      icon={item.icon}
+                      onClick={() => {
+                        setScreen(item.id);
+                        setMobileMenuOpen(false);
+                      }}
+                      compact
+                    />
+                  ))}
+                  <a
+                    href={INSTAGRAM_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                  >
+                    <Instagram className="h-4 w-4" /> Contato
+                  </a>
+                </div>
+              </div>
+            ) : null}
 
             {message && <AlertBanner tone="success" message={message} />}
             {errorMessage && <AlertBanner tone="error" message={errorMessage} />}
 
             {loadingData ? (
-              <div className="flex min-h-[300px] items-center justify-center rounded-[30px] bg-white shadow-panel">
+              <div className="flex min-h-[320px] items-center justify-center rounded-[30px] bg-white shadow-panel">
                 <div className="flex items-center gap-3 text-slate-600">
                   <Loader2 className="h-5 w-5 animate-spin text-brand-600" /> Carregando...
                 </div>
               </div>
-            ) : !workspace ? (
-              <WorkspaceSetupForm
-                values={workspaceForm}
-                onChange={setWorkspaceForm}
-                onSubmit={handleSaveWorkspace}
-                loading={savingWorkspace}
-              />
             ) : (
               <>
-                {screen === "dashboard" && (
+                {screen === "plans" && (
+                  <PlansScreen
+                    selectedPlanCode={selectedPlanCode}
+                    onSelectPlan={setSelectedPlanCode}
+                    workspaceForm={workspaceForm}
+                    onWorkspaceFormChange={setWorkspaceForm}
+                    onSubmit={handleSaveWorkspace}
+                    loading={savingWorkspace}
+                    currentPlan={activePlan}
+                    workspace={workspace}
+                  />
+                )}
+
+                {workspace && !accessGranted && screen !== "admin" ? (
+                  <Panel title="Status do plano">
+                    <p className="text-slate-700">Seu pedido está em análise manual.</p>
+                    <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                      <a
+                        href={INSTAGRAM_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700"
+                      >
+                        <Instagram className="h-4 w-4" /> Falar com o proprietário
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => setScreen("workspace")}
+                        className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200 px-5 font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Revisar dados do espaço
+                      </button>
+                    </div>
+                  </Panel>
+                ) : null}
+
+                {workspace && accessGranted && screen === "dashboard" && (
                   <div className="space-y-5">
-                    <section className="rounded-[30px] bg-gradient-to-r from-brand-600 to-sky-500 p-5 text-white shadow-panel sm:p-6">
-                      <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+                    <section className="rounded-[30px] bg-gradient-to-r from-brand-600 to-sky-500 p-6 text-white shadow-panel">
+                      <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
                         <div>
                           <div className="flex items-center gap-2 text-sm text-blue-100">
-                            <Home className="h-4 w-4" /> {workspace.name} <span className="opacity-60">|</span> {workspace.school_name}
+                            <Home className="h-4 w-4" /> {workspace.name}
                           </div>
-                          <h2 className="mt-2 text-2xl font-bold sm:text-3xl">Olá, {currentUserName}!</h2>
+                          <h2 className="mt-2 text-3xl font-bold">
+                            Olá{session.user.user_metadata?.full_name ? `, ${String(session.user.user_metadata.full_name)}` : ""}!
+                          </h2>
                         </div>
-
-                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="grid gap-3 sm:grid-cols-3">
                           <QuickMetric label="Concluídas" value={String(doneCount)} tone="bg-white/15" />
                           <QuickMetric label="Pendentes" value={String(pendingCount)} tone="bg-white/15" />
-                          <QuickMetric label="Provas" value={String(upcomingTests.length)} tone="bg-white/15" />
-                          <QuickMetric label="Grupos" value={String(groups.length)} tone="bg-white/15" />
+                          <QuickMetric label="Membros" value={String(members.length)} tone="bg-white/15" />
                         </div>
                       </div>
                     </section>
@@ -1265,57 +1453,39 @@ export function ClassBoardApp() {
                     <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
                       <Panel title="Hoje">
                         <div className="space-y-3">
-                          {todayTasks.length ? (
-                            todayTasks.map((task) => <TaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} groupName={groups.find((group) => group.id === task.group_id)?.name ?? null} />)
-                          ) : (
-                            <EmptyState text="Nenhuma tarefa para hoje." />
-                          )}
+                          {todayTasks.length ? todayTasks.map((task) => <TaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />) : <EmptyState text="Nenhuma tarefa para hoje." />}
                         </div>
                       </Panel>
 
                       <div className="grid gap-5">
-                        <Panel title="Próximas Provas">
+                        <Panel title="Próximas provas">
                           <div className="space-y-3">
-                            {upcomingTests.length ? (
-                              upcomingTests.map((task) => <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} groupName={groups.find((group) => group.id === task.group_id)?.name ?? null} />)
-                            ) : (
-                              <EmptyState text="Sem provas próximas." />
-                            )}
+                            {upcomingTests.length ? upcomingTests.map((task) => <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />) : <EmptyState text="Sem provas próximas." />}
                           </div>
                         </Panel>
 
-                        <Panel title="Tarefas Pendentes">
+                        <Panel title="Pendências">
                           <div className="space-y-3">
-                            {pendingTasks.length ? (
-                              pendingTasks.map((task) => <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} groupName={groups.find((group) => group.id === task.group_id)?.name ?? null} />)
-                            ) : (
-                              <EmptyState text="Nenhuma pendência agora." />
-                            )}
+                            {pendingTasks.length ? pendingTasks.map((task) => <CompactTaskRow key={task.id} task={task} onEdit={() => openEditTask(task)} />) : <EmptyState text="Sem pendências." />}
                           </div>
                         </Panel>
                       </div>
-                    </div>
-
-                    <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
-                      <Panel title="Resumo da Semana">
-                        <div className="grid gap-4 md:grid-cols-3">
-                          <SummaryCard label="Concluídas" value={doneCount} className="bg-brand-600 text-white" />
-                          <SummaryCard label="Pendentes" value={pendingCount} className="bg-orange-500 text-white" />
-                          <SummaryCard label="Membros" value={members.length} className="bg-emerald-500 text-white" />
-                        </div>
-                      </Panel>
-
-                      <MembersPanel members={members} />
                     </div>
                   </div>
                 )}
 
-                {screen === "tasks" && (
+                {workspace && accessGranted && screen === "tasks" && (
                   <div className="space-y-5">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                      <div>
-                        <h2 className="text-3xl font-bold text-slate-900">Tarefas</h2>
-                      </div>
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <h2 className="text-3xl font-bold text-slate-900">Tarefas</h2>
+                      <button
+                        type="button"
+                        onClick={openCreateTask}
+                        disabled={!accessGranted || taskLimitReached}
+                        className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Plus className="h-4 w-4" /> Nova tarefa
+                      </button>
                     </div>
 
                     <Panel title="Filtros">
@@ -1325,11 +1495,10 @@ export function ClassBoardApp() {
                           <input
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            placeholder="Buscar por tarefa, matéria ou grupo"
+                            placeholder="Buscar por tarefa ou matéria"
                             className="h-12 w-full rounded-2xl border border-slate-200 pl-11 pr-4"
                           />
                         </div>
-
                         <div className="flex flex-wrap gap-2">
                           {[
                             ["todos", "Todos"],
@@ -1342,9 +1511,7 @@ export function ClassBoardApp() {
                               type="button"
                               onClick={() => setTaskFilter(key as typeof taskFilter)}
                               className={`inline-flex h-11 items-center justify-center rounded-2xl px-4 text-sm font-medium transition ${
-                                taskFilter === key
-                                  ? "bg-brand-600 text-white"
-                                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                                taskFilter === key ? "bg-brand-600 text-white" : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                               }`}
                             >
                               {label}
@@ -1357,13 +1524,7 @@ export function ClassBoardApp() {
                     <div className="grid gap-5 xl:grid-cols-2">
                       {filteredTasks.length ? (
                         filteredTasks.map((task) => (
-                          <TaskCard
-                            key={task.id}
-                            task={task}
-                            groupName={groups.find((group) => group.id === task.group_id)?.name ?? null}
-                            onToggleChecklist={toggleChecklist}
-                            onEdit={() => openEditTask(task)}
-                          />
+                          <TaskCard key={task.id} task={task} onToggleChecklist={toggleChecklist} onEdit={() => openEditTask(task)} groups={groups} />
                         ))
                       ) : (
                         <Panel title="Lista">
@@ -1374,9 +1535,9 @@ export function ClassBoardApp() {
                   </div>
                 )}
 
-                {screen === "calendar" && (
+                {workspace && accessGranted && screen === "calendar" && (
                   <Panel title="Calendário">
-                    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                    <div className="grid gap-4 md:grid-cols-5">
                       {weeklyCalendar.map((day) => (
                         <div key={day.iso} className="min-h-[200px] rounded-[24px] border border-slate-200 bg-slate-50 p-4">
                           <div className="flex items-center justify-between">
@@ -1387,21 +1548,17 @@ export function ClassBoardApp() {
                             <CalendarDays className="h-5 w-5 text-slate-400" />
                           </div>
                           <div className="mt-5 space-y-3">
-                            {day.items.length ? (
-                              day.items.map((task) => (
-                                <button
-                                  key={task.id}
-                                  type="button"
-                                  onClick={() => openEditTask(task)}
-                                  className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
-                                >
-                                  <p className="font-medium text-slate-900">{task.title}</p>
-                                  <p className="mt-1 text-sm text-slate-500">{task.subject}</p>
-                                </button>
-                              ))
-                            ) : (
-                              <EmptyState text="Sem itens." compact />
-                            )}
+                            {day.items.length ? day.items.map((task) => (
+                              <button
+                                key={task.id}
+                                type="button"
+                                onClick={() => openEditTask(task)}
+                                className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
+                              >
+                                <p className="font-medium text-slate-900">{task.title}</p>
+                                <p className="mt-1 text-sm text-slate-500">{task.subject}</p>
+                              </button>
+                            )) : <EmptyState text="Sem itens." compact />}
                           </div>
                         </div>
                       ))}
@@ -1409,32 +1566,204 @@ export function ClassBoardApp() {
                   </Panel>
                 )}
 
-                {screen === "workspace" && (
+                {workspace && screen === "workspace" && (
                   <div className="space-y-5">
-                    <WorkspaceSetupForm
-                      values={workspaceForm}
-                      onChange={setWorkspaceForm}
-                      onSubmit={handleSaveWorkspace}
-                      loading={savingWorkspace}
-                      showInviteSection={Boolean(workspace)}
-                      inviteCode={workspace.invite_code}
-                      onCopyInvite={copyInviteLink}
-                    />
+                    <Panel title="Espaço">
+                      <form className="grid gap-5 lg:grid-cols-[1fr_0.8fr]" onSubmit={handleSaveWorkspace}>
+                        <div className="grid gap-5">
+                          <label className="grid gap-2">
+                            <span className="text-sm font-medium text-slate-700">Nome da escola</span>
+                            <input
+                              value={workspaceForm.schoolName}
+                              onChange={(e) => setWorkspaceForm((prev) => ({ ...prev, schoolName: e.target.value }))}
+                              className="h-12 rounded-2xl border border-slate-200 px-4"
+                            />
+                          </label>
+                          <label className="grid gap-2">
+                            <span className="text-sm font-medium text-slate-700">Nome do espaço</span>
+                            <input
+                              required
+                              value={workspaceForm.className}
+                              onChange={(e) => setWorkspaceForm((prev) => ({ ...prev, className: e.target.value }))}
+                              className="h-12 rounded-2xl border border-slate-200 px-4"
+                            />
+                          </label>
+                          <div>
+                            <p className="text-sm font-medium text-slate-700">Plano selecionado</p>
+                            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                              {PLAN_ORDER.map((planCode) => {
+                                const plan = PLAN_DEFINITIONS[planCode];
+                                const selected = selectedPlanCode === planCode;
+                                return (
+                                  <button
+                                    key={plan.code}
+                                    type="button"
+                                    onClick={() => setSelectedPlanCode(plan.code)}
+                                    className={`rounded-3xl border p-4 text-left transition ${
+                                      selected ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:bg-slate-50"
+                                    }`}
+                                  >
+                                    <p className="font-semibold text-slate-900">{plan.title}</p>
+                                    <p className="mt-2 text-sm text-slate-500">{plan.subtitle}</p>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className="flex justify-end">
+                            <button
+                              type="submit"
+                              disabled={savingWorkspace}
+                              className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+                            >
+                              {savingWorkspace ? "Salvando..." : "Salvar"}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="space-y-5">
+                          <InfoCard title="Convite" icon={<Copy className="h-5 w-5 text-brand-600" />}>
+                            <p className="text-sm text-slate-500">Código</p>
+                            <p className="mt-2 text-2xl font-bold text-slate-900">{workspace.invite_code}</p>
+                            <button
+                              type="button"
+                              onClick={copyInviteLink}
+                              disabled={!canInviteMembers}
+                              className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              <Copy className="h-4 w-4" /> Copiar link
+                            </button>
+                          </InfoCard>
+                          <InfoCard title="Membros" icon={<Users className="h-5 w-5 text-brand-600" />}>
+                            <div className="space-y-3">
+                              {members.length ? members.map((member) => (
+                                <div key={member.id} className="rounded-2xl border border-slate-200 px-4 py-3">
+                                  <p className="font-medium text-slate-900">{member.profile?.full_name || member.profile?.email || "Usuário"}</p>
+                                  <p className="text-sm text-slate-500">{member.profile?.email || "Sem email"} • {member.role}</p>
+                                </div>
+                              )) : <EmptyState text="Sem membros." compact />}
+                            </div>
+                          </InfoCard>
+                        </div>
+                      </form>
+                    </Panel>
 
-                    <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
-                      <GroupsPanel
-                        groups={groups}
-                        groupName={groupName}
-                        setGroupName={setGroupName}
-                        groupDescription={groupDescription}
-                        setGroupDescription={setGroupDescription}
-                        onSubmit={handleCreateGroup}
-                        saving={savingGroup}
-                        deletingGroupId={deletingGroupId}
-                        onDelete={handleDeleteGroup}
-                      />
-                      <MembersPanel members={members} showEmails />
-                    </div>
+                    <Panel title="Grupos">
+                      {!canUseGroups ? (
+                        <EmptyState text="Seu plano atual não permite grupos." />
+                      ) : (
+                        <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+                          <form className="grid gap-4" onSubmit={handleCreateGroup}>
+                            <label className="grid gap-2">
+                              <span className="text-sm font-medium text-slate-700">Nome</span>
+                              <input
+                                value={groupForm.name}
+                                onChange={(e) => setGroupForm((prev) => ({ ...prev, name: e.target.value }))}
+                                className="h-12 rounded-2xl border border-slate-200 px-4"
+                                placeholder="Ex.: Grupo de Física"
+                              />
+                            </label>
+                            <label className="grid gap-2">
+                              <span className="text-sm font-medium text-slate-700">Descrição</span>
+                              <textarea
+                                value={groupForm.description}
+                                onChange={(e) => setGroupForm((prev) => ({ ...prev, description: e.target.value }))}
+                                className="min-h-[120px] rounded-2xl border border-slate-200 px-4 py-3"
+                              />
+                            </label>
+                            <button
+                              type="submit"
+                              disabled={savingGroup}
+                              className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+                            >
+                              {savingGroup ? "Salvando..." : "Criar grupo"}
+                            </button>
+                          </form>
+                          <div className="space-y-3">
+                            {groups.length ? groups.map((group) => (
+                              <div key={group.id} className="rounded-2xl border border-slate-200 px-4 py-4">
+                                <p className="font-semibold text-slate-900">{group.name}</p>
+                                <p className="mt-1 text-sm text-slate-500">{group.description || "Sem descrição"}</p>
+                              </div>
+                            )) : <EmptyState text="Nenhum grupo criado." />}
+                          </div>
+                        </div>
+                      )}
+                    </Panel>
+                  </div>
+                )}
+
+                {isAdmin && screen === "admin" && (
+                  <div className="space-y-5">
+                    <Panel title="Painel admin">
+                      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="relative w-full lg:max-w-md">
+                          <Search className="absolute left-4 top-3.5 h-4 w-4 text-slate-400" />
+                          <input
+                            value={adminSearch}
+                            onChange={(e) => setAdminSearch(e.target.value)}
+                            placeholder="Buscar por email, nome ou workspace"
+                            className="h-12 w-full rounded-2xl border border-slate-200 pl-11 pr-4"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void loadAdminRows()}
+                          className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200 px-5 font-medium text-slate-700 transition hover:bg-slate-50"
+                        >
+                          Atualizar lista
+                        </button>
+                      </div>
+
+                      {adminLoading ? (
+                        <div className="flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-4 text-slate-600">
+                          <Loader2 className="h-4 w-4 animate-spin" /> Carregando painel admin...
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {filteredAdminRows.length ? filteredAdminRows.map((row) => (
+                            <div key={row.workspace.id} className="rounded-3xl border border-slate-200 p-4">
+                              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                                <div>
+                                  <p className="text-lg font-semibold text-slate-900">{row.workspace.name}</p>
+                                  <p className="text-sm text-slate-500">{row.ownerProfile?.email || "Sem email"}</p>
+                                  <p className="mt-1 text-sm text-slate-500">{row.workspace.school_name || "Sem escola"} • {row.memberCount} membro(s)</p>
+                                  <p className="mt-1 text-sm text-slate-500">Plano: {PLAN_DEFINITIONS[row.plan?.plan_code ?? "individual_free"].title} • Status: {row.plan?.status ?? "sem registro"}</p>
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-3">
+                                  {PLAN_ORDER.map((planCode) => (
+                                    <button
+                                      key={planCode}
+                                      type="button"
+                                      onClick={() => void handleAdminUpdate(row, planCode, "active")}
+                                      disabled={adminSavingWorkspaceId === row.workspace.id}
+                                      className="inline-flex h-11 items-center justify-center rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      Liberar {PLAN_DEFINITIONS[planCode].title}
+                                    </button>
+                                  ))}
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleAdminUpdate(row, row.plan?.plan_code ?? "individual_free", "pending")}
+                                    disabled={adminSavingWorkspaceId === row.workspace.id}
+                                    className="inline-flex h-11 items-center justify-center rounded-2xl bg-amber-500 px-4 text-sm font-semibold text-white transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Deixar pendente
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleAdminUpdate(row, row.plan?.plan_code ?? "individual_free", "inactive")}
+                                    disabled={adminSavingWorkspaceId === row.workspace.id}
+                                    className="inline-flex h-11 items-center justify-center rounded-2xl bg-slate-900 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Inativar
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )) : <EmptyState text="Nenhum workspace encontrado." />}
+                        </div>
+                      )}
+                    </Panel>
                   </div>
                 )}
               </>
@@ -1443,104 +1772,179 @@ export function ClassBoardApp() {
         </main>
       </div>
 
-      {workspace ? (
-        <MobileBottomNav screen={screen} setScreen={setScreen} onAddTask={openCreateTask} />
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 p-3 shadow-panel xl:hidden">
+        <div className="mx-auto flex max-w-3xl items-center justify-around gap-2">
+          {navItems.slice(0, 5).map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setScreen(item.id)}
+              className={`flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl px-2 py-2 text-xs font-medium transition ${
+                screen === item.id ? "bg-brand-50 text-brand-700" : "text-slate-600"
+              }`}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+    </div>
+  );
+}
+
+function BrandPanel({ onContact = false }: { onContact?: boolean }) {
+  return (
+    <div className="space-y-5 px-2">
+      <div className="flex items-center gap-3">
+        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-600 shadow-lg shadow-brand-950/40">
+          <BookOpen className="h-5 w-5" />
+        </div>
+        <div>
+          <p className="font-semibold">ClassBoard</p>
+        </div>
+      </div>
+      {onContact ? (
+        <a
+          href={INSTAGRAM_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 text-sm font-medium text-white transition hover:bg-white/10"
+        >
+          <Instagram className="h-4 w-4" /> @vt_.rodrxgs
+        </a>
       ) : null}
     </div>
   );
 }
 
-function WorkspaceSetupForm({
-  values,
-  onChange,
+function PlansScreen({
+  selectedPlanCode,
+  onSelectPlan,
+  workspaceForm,
+  onWorkspaceFormChange,
   onSubmit,
   loading,
-  showInviteSection = false,
-  inviteCode,
-  onCopyInvite,
+  currentPlan,
+  workspace,
 }: {
-  values: WorkspaceFormValues;
-  onChange: (values: WorkspaceFormValues) => void;
+  selectedPlanCode: PlanCode;
+  onSelectPlan: (planCode: PlanCode) => void;
+  workspaceForm: WorkspaceFormValues;
+  onWorkspaceFormChange: (values: WorkspaceFormValues) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> | void;
   loading: boolean;
-  showInviteSection?: boolean;
-  inviteCode?: string;
-  onCopyInvite?: () => Promise<void> | void;
+  currentPlan: WorkspacePlan | null;
+  workspace: Workspace | null;
 }) {
   return (
-    <Panel title="Configuração do espaço">
-      <form className="grid gap-5 xl:grid-cols-[1fr_0.7fr]" onSubmit={onSubmit}>
-        <div className="grid gap-5">
-          <label className="grid gap-2">
-            <span className="text-sm font-medium text-slate-700">Nome da escola</span>
-            <input
-              value={values.schoolName}
-              onChange={(e) => onChange({ ...values, schoolName: e.target.value })}
-              className="h-12 rounded-2xl border border-slate-200 px-4"
-              placeholder="Ex.: Colégio Alfa"
-            />
-          </label>
-
-          <label className="grid gap-2">
-            <span className="text-sm font-medium text-slate-700">Nome da turma ou grupo</span>
-            <input
-              required
-              value={values.className}
-              onChange={(e) => onChange({ ...values, className: e.target.value })}
-              className="h-12 rounded-2xl border border-slate-200 px-4"
-              placeholder="Ex.: Turma 2ºB"
-            />
-          </label>
-
-          <label className="grid gap-2">
-            <span className="text-sm font-medium text-slate-700">Tipo</span>
-            <select
-              value={values.workspaceType}
-              onChange={(e) => onChange({ ...values, workspaceType: e.target.value as WorkspaceType })}
-              className="h-12 rounded-2xl border border-slate-200 px-4"
-            >
-              <option value="turma">Turma</option>
-              <option value="grupo">Grupo</option>
-              <option value="individual">Individual</option>
-            </select>
-          </label>
-
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={loading}
-              className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {loading ? "Salvando..." : "Salvar"}
-            </button>
-          </div>
+    <div className="space-y-5">
+      <Panel title="Planos">
+        <div className="grid gap-4 lg:grid-cols-3">
+          {PLAN_ORDER.map((planCode) => {
+            const plan = PLAN_DEFINITIONS[planCode];
+            const selected = selectedPlanCode === planCode;
+            const current = currentPlan?.plan_code === planCode;
+            return (
+              <button
+                key={plan.code}
+                type="button"
+                onClick={() => onSelectPlan(plan.code)}
+                className={`rounded-[28px] border p-5 text-left transition ${
+                  selected ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:bg-slate-50"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-lg font-semibold text-slate-900">{plan.title}</p>
+                  {current ? <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">Atual</span> : null}
+                </div>
+                <p className="mt-3 text-sm text-slate-600">{plan.subtitle}</p>
+                <div className="mt-4 space-y-2 text-sm text-slate-500">
+                  <p>{plan.limits.maxMembers} membro(s)</p>
+                  <p>{plan.limits.maxActiveTasks} tarefas ativas</p>
+                  <p>{plan.features.attachments ? "Com anexos" : "Sem anexos"}</p>
+                  <p>{plan.features.groups ? `${plan.limits.maxGroups} grupo(s)` : "Sem grupos"}</p>
+                </div>
+              </button>
+            );
+          })}
         </div>
+      </Panel>
 
-        {showInviteSection ? (
-          <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
-            <p className="text-sm text-slate-500">Código do convite</p>
-            <p className="mt-2 break-all text-2xl font-bold text-slate-900">{inviteCode}</p>
-            <button
-              type="button"
-              onClick={() => void onCopyInvite?.()}
-              className="mt-5 inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-            >
-              <Copy className="h-4 w-4" /> Copiar link
-            </button>
+      <Panel title="Configuração inicial">
+        <form className="grid gap-5 lg:grid-cols-[1fr_0.8fr]" onSubmit={onSubmit}>
+          <div className="grid gap-5">
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">Nome da escola</span>
+              <input
+                value={workspaceForm.schoolName}
+                onChange={(e) => onWorkspaceFormChange({ ...workspaceForm, schoolName: e.target.value })}
+                className="h-12 rounded-2xl border border-slate-200 px-4"
+                placeholder="Ex.: Escola Modelo"
+              />
+            </label>
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">Nome do espaço</span>
+              <input
+                required
+                value={workspaceForm.className}
+                onChange={(e) => onWorkspaceFormChange({ ...workspaceForm, className: e.target.value })}
+                className="h-12 rounded-2xl border border-slate-200 px-4"
+                placeholder="Ex.: Turma 2ºB"
+              />
+            </label>
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={loading}
+                className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {loading ? "Salvando..." : workspace ? "Atualizar" : "Criar espaço"}
+              </button>
+            </div>
           </div>
-        ) : null}
-      </form>
-    </Panel>
+          <div className="space-y-5">
+            <InfoCard title="Contato" icon={<Instagram className="h-5 w-5 text-brand-600" />}>
+              <a
+                href={INSTAGRAM_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                <Instagram className="h-4 w-4" /> @vt_.rodrxgs
+              </a>
+            </InfoCard>
+            {currentPlan?.status === "pending" ? (
+              <InfoCard title="Status" icon={<AlertCircle className="h-5 w-5 text-amber-500" />}>
+                <p className="text-sm text-slate-600">Solicitação pendente de liberação manual.</p>
+              </InfoCard>
+            ) : null}
+          </div>
+        </form>
+      </Panel>
+    </div>
   );
 }
 
-function SidebarButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: ReactNode; onClick: () => void }) {
+function SidebarButton({
+  active,
+  label,
+  icon,
+  onClick,
+  compact = false,
+}: {
+  active: boolean;
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+  compact?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-2xl px-4 py-4 text-left transition ${
-        active ? "bg-brand-600 text-white shadow-lg shadow-brand-950/40" : "text-slate-200 hover:bg-white/5"
+      className={`flex w-full items-center gap-3 rounded-2xl ${compact ? "px-3 py-3" : "px-4 py-4"} text-left transition ${
+        active ? "bg-brand-600 text-white shadow-lg shadow-brand-950/30" : compact ? "text-slate-700 hover:bg-slate-50" : "text-slate-200 hover:bg-white/5"
       }`}
     >
       {icon}
@@ -1549,61 +1953,32 @@ function SidebarButton({ active, label, icon, onClick }: { active: boolean; labe
   );
 }
 
-function MobileBottomNav({
-  screen,
-  setScreen,
-  onAddTask,
-}: {
-  screen: Screen;
-  setScreen: (screen: Screen) => void;
-  onAddTask: () => void;
-}) {
-  return (
-    <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-2 py-2 backdrop-blur xl:hidden">
-      <div className="grid grid-cols-5 gap-2">
-        <BottomButton active={screen === "dashboard"} label="Painel" icon={<Home className="h-5 w-5" />} onClick={() => setScreen("dashboard")} />
-        <BottomButton active={screen === "tasks"} label="Tarefas" icon={<ClipboardList className="h-5 w-5" />} onClick={() => setScreen("tasks")} />
-        <button
-          type="button"
-          onClick={onAddTask}
-          className="inline-flex h-14 flex-col items-center justify-center rounded-2xl bg-brand-600 text-white"
-        >
-          <Plus className="h-5 w-5" />
-          <span className="text-[11px] font-medium">Nova</span>
-        </button>
-        <BottomButton active={screen === "calendar"} label="Agenda" icon={<CalendarDays className="h-5 w-5" />} onClick={() => setScreen("calendar")} />
-        <BottomButton active={screen === "workspace"} label="Espaço" icon={<Settings className="h-5 w-5" />} onClick={() => setScreen("workspace")} />
-      </div>
-    </div>
-  );
-}
-
-function BottomButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: ReactNode; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`inline-flex h-14 flex-col items-center justify-center rounded-2xl text-[11px] font-medium ${
-        active ? "bg-brand-50 text-brand-700" : "text-slate-600"
-      }`}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
-  );
-}
-
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-[30px] bg-white p-5 shadow-panel sm:p-6">
-      <h3 className="text-xl font-bold text-slate-900 sm:text-2xl">{title}</h3>
+    <section className="rounded-[30px] bg-white p-6 shadow-panel">
+      <h3 className="text-2xl font-bold text-slate-900">{title}</h3>
       <div className="mt-5">{children}</div>
     </section>
   );
 }
 
+function InfoCard({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+  return (
+    <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+      <div className="flex items-center gap-3">
+        {icon}
+        <p className="font-semibold text-slate-900">{title}</p>
+      </div>
+      <div className="mt-4">{children}</div>
+    </div>
+  );
+}
+
 function AlertBanner({ tone, message }: { tone: "success" | "error"; message: string }) {
-  const toneClasses = tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700";
+  const toneClasses =
+    tone === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : "border-red-200 bg-red-50 text-red-700";
   return (
     <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 text-sm font-medium ${toneClasses}`}>
       <AlertCircle className="h-4 w-4" /> {message}
@@ -1611,25 +1986,40 @@ function AlertBanner({ tone, message }: { tone: "success" | "error"; message: st
   );
 }
 
+function PlanBadge({ plan }: { plan: WorkspacePlan | null }) {
+  const definition = getPlanDefinition(plan?.plan_code ?? null);
+  const label = definition?.title ?? "Sem plano";
+  const tone = !plan ? "bg-slate-100 text-slate-700" : plan.status === "active" ? "bg-emerald-50 text-emerald-700" : plan.status === "pending" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-700";
+  return <span className={`inline-flex rounded-full px-3 py-2 text-xs font-semibold ${tone}`}>{label}</span>;
+}
+
 function QuickMetric({ label, value, tone }: { label: string; value: string; tone: string }) {
   return (
     <div className={`rounded-[24px] px-5 py-4 ${tone}`}>
-      <p className="text-3xl font-bold sm:text-4xl">{value}</p>
-      <p className="mt-1 text-base sm:text-lg">{label}</p>
+      <p className="text-4xl font-bold">{value}</p>
+      <p className="mt-1 text-lg">{label}</p>
     </div>
   );
 }
 
-function TaskRow({ task, onEdit, groupName }: { task: Task; onEdit: () => void; groupName: string | null }) {
+function EmptyState({ text, compact = false }: { text: string; compact?: boolean }) {
+  return (
+    <div className={`rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-500 ${compact ? "px-4 py-3 text-sm" : "px-5 py-10"}`}>
+      {text}
+    </div>
+  );
+}
+
+function TaskRow({ task, onEdit }: { task: Task; onEdit: () => void }) {
   return (
     <button
       type="button"
       onClick={onEdit}
-      className="flex w-full flex-col gap-3 rounded-2xl border border-slate-200 px-4 py-4 text-left transition hover:border-brand-200 hover:bg-brand-50/30 sm:flex-row sm:items-center sm:justify-between"
+      className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-4 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
     >
       <div>
         <p className="font-semibold text-slate-900">{task.title}</p>
-        <p className="mt-1 text-sm text-slate-500">{task.subject}{groupName ? ` • ${groupName}` : ""}</p>
+        <p className="mt-1 text-sm text-slate-500">{task.subject}</p>
       </div>
       <div className="flex items-center gap-3">
         <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>{humanDueLabel(task.due_date)}</span>
@@ -1639,7 +2029,7 @@ function TaskRow({ task, onEdit, groupName }: { task: Task; onEdit: () => void; 
   );
 }
 
-function CompactTaskRow({ task, onEdit, groupName }: { task: Task; onEdit: () => void; groupName: string | null }) {
+function CompactTaskRow({ task, onEdit }: { task: Task; onEdit: () => void }) {
   return (
     <button
       type="button"
@@ -1647,151 +2037,43 @@ function CompactTaskRow({ task, onEdit, groupName }: { task: Task; onEdit: () =>
       className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-4 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
     >
       <div>
-        <p className="text-lg font-semibold text-slate-900 sm:text-xl">{task.subject}</p>
+        <p className="text-xl font-semibold text-slate-900">{task.subject}</p>
         <p className="text-slate-500">{task.title}</p>
-        {groupName ? <p className="text-sm text-slate-400">{groupName}</p> : null}
       </div>
       <div className="text-right">
-        <p className="text-xl font-bold text-brand-600 sm:text-2xl">{humanDueLabel(task.due_date).replace("Em ", "")}</p>
+        <p className="text-2xl font-bold text-brand-600">{humanDueLabel(task.due_date).replace("Em ", "")}</p>
         <p className="text-sm text-slate-400">{formatDate(task.due_date)}</p>
       </div>
     </button>
   );
 }
 
-function SummaryCard({ label, value, className }: { label: string; value: number; className: string }) {
-  return (
-    <div className={`rounded-[28px] p-5 sm:p-6 ${className}`}>
-      <p className="text-4xl font-bold sm:text-5xl">{value}</p>
-      <p className="mt-2 text-xl sm:text-2xl">{label}</p>
-    </div>
-  );
-}
-
-function EmptyState({ text, compact = false }: { text: string; compact?: boolean }) {
-  return <div className={`rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-500 ${compact ? "px-4 py-3 text-sm" : "px-5 py-10"}`}>{text}</div>;
-}
-
-function MembersPanel({ members, showEmails = false }: { members: WorkspaceMember[]; showEmails?: boolean }) {
-  return (
-    <Panel title="Membros">
-      <div className="space-y-3">
-        {members.length ? (
-          members.map((member) => (
-            <div key={member.id} className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
-              <div>
-                <p className="font-medium text-slate-900">{member.profile?.full_name || member.profile?.email || member.user_id}</p>
-                {showEmails && member.profile?.email ? <p className="text-sm text-slate-500">{member.profile.email}</p> : null}
-              </div>
-              <span className="rounded-xl bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">{formatRole(member.role)}</span>
-            </div>
-          ))
-        ) : (
-          <EmptyState text="Nenhum membro encontrado." compact />
-        )}
-      </div>
-    </Panel>
-  );
-}
-
-function GroupsPanel({
-  groups,
-  groupName,
-  setGroupName,
-  groupDescription,
-  setGroupDescription,
-  onSubmit,
-  saving,
-  deletingGroupId,
-  onDelete,
-}: {
-  groups: WorkspaceGroup[];
-  groupName: string;
-  setGroupName: (value: string) => void;
-  groupDescription: string;
-  setGroupDescription: (value: string) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> | void;
-  saving: boolean;
-  deletingGroupId: string | null;
-  onDelete: (group: WorkspaceGroup) => Promise<void> | void;
-}) {
-  return (
-    <Panel title="Grupos internos">
-      <form className="grid gap-3" onSubmit={onSubmit}>
-        <input
-          value={groupName}
-          onChange={(e) => setGroupName(e.target.value)}
-          className="h-12 rounded-2xl border border-slate-200 px-4"
-          placeholder="Nome do grupo"
-        />
-        <textarea
-          value={groupDescription}
-          onChange={(e) => setGroupDescription(e.target.value)}
-          className="min-h-[96px] rounded-2xl border border-slate-200 px-4 py-3"
-          placeholder="Descrição opcional"
-        />
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={saving}
-            className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            {saving ? "Salvando..." : "Criar grupo"}
-          </button>
-        </div>
-      </form>
-
-      <div className="mt-5 space-y-3">
-        {groups.length ? (
-          groups.map((group) => (
-            <div key={group.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 px-4 py-4">
-              <div>
-                <p className="font-semibold text-slate-900">{group.name}</p>
-                {group.description ? <p className="mt-1 text-sm text-slate-500">{group.description}</p> : null}
-              </div>
-              <button
-                type="button"
-                onClick={() => void onDelete(group)}
-                disabled={deletingGroupId === group.id}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-          ))
-        ) : (
-          <EmptyState text="Nenhum grupo criado." compact />
-        )}
-      </div>
-    </Panel>
-  );
-}
-
 function TaskCard({
   task,
-  groupName,
   onToggleChecklist,
   onEdit,
+  groups,
 }: {
   task: Task;
-  groupName: string | null;
   onToggleChecklist: (task: Task, item: ChecklistItem) => Promise<void> | void;
   onEdit: () => void;
+  groups: WorkspaceGroup[];
 }) {
   const progress = calculateProgress(task.checklist_items);
+  const groupName = groups.find((group) => group.id === task.group_id)?.name;
 
   return (
-    <section className="rounded-[30px] bg-white p-5 shadow-panel sm:p-6">
+    <section className="rounded-[30px] bg-white p-6 shadow-panel">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="mb-3 flex flex-wrap gap-2">
             <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapPriority(task.priority)}`}>{task.priority}</span>
             <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>{humanDueLabel(task.due_date)}</span>
             <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-700">{statusLabel(task.status)}</span>
-            {groupName ? <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-700">{groupName}</span> : null}
+            {groupName ? <span className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-1 text-sm font-medium text-sky-700">{groupName}</span> : null}
           </div>
-          <h3 className="text-xl font-bold text-slate-900 sm:text-2xl">{task.title}</h3>
-          <p className="mt-1 text-slate-500">{task.subject} • {typeLabel(task.task_type)}</p>
+          <h3 className="text-2xl font-bold text-slate-900">{task.title}</h3>
+          <p className="mt-1 text-slate-500">{task.subject}</p>
         </div>
         <button
           type="button"
@@ -1815,21 +2097,17 @@ function TaskCard({
       {task.description ? <p className="mt-5 text-sm leading-relaxed text-slate-600">{task.description}</p> : null}
 
       <div className="mt-5 space-y-2">
-        {task.checklist_items.length ? (
-          task.checklist_items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => void onToggleChecklist(task, item)}
-              className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-3 text-left transition hover:bg-slate-50"
-            >
-              <span className={`${item.is_done ? "text-slate-400 line-through" : "text-slate-700"}`}>{item.content}</span>
-              <CheckCircle2 className={`h-5 w-5 ${item.is_done ? "text-emerald-500" : "text-slate-300"}`} />
-            </button>
-          ))
-        ) : (
-          <EmptyState text="Sem checklist." compact />
-        )}
+        {task.checklist_items.length ? task.checklist_items.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => void onToggleChecklist(task, item)}
+            className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-3 text-left transition hover:bg-slate-50"
+          >
+            <span className={`${item.is_done ? "text-slate-400 line-through" : "text-slate-700"}`}>{item.content}</span>
+            <CheckCircle2 className={`h-5 w-5 ${item.is_done ? "text-emerald-500" : "text-slate-300"}`} />
+          </button>
+        )) : <EmptyState text="Sem checklist." compact />}
       </div>
 
       {task.attachment_name && task.attachment_url ? (

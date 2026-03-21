@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "ClassBoard",
-  description: "Organizador escolar colaborativo com fases 1 e 2 integradas.",
+  description: "Organização escolar com planos, painel admin e gestão colaborativa.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -1,21 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, FileUp, ListChecks, Save, Trash2, Users, X } from "lucide-react";
+import { CalendarDays, FileUp, ListChecks, Trash2, Users, X } from "lucide-react";
 import type { TaskFormValues, WorkspaceGroup } from "@/lib/types";
-
-const initialValues: TaskFormValues = {
-  title: "",
-  description: "",
-  subject: "",
-  taskType: "trabalho",
-  dueDate: "",
-  priority: "media",
-  status: "pendente",
-  checklistRaw: "",
-  groupId: "",
-  file: null,
-};
 
 type TaskFormProps = {
   open: boolean;
@@ -23,10 +10,25 @@ type TaskFormProps = {
   onSubmit: (values: TaskFormValues) => Promise<void> | void;
   submitting: boolean;
   initialValues?: TaskFormValues | null;
-  mode?: "create" | "edit";
+  mode: "create" | "edit";
   onDelete?: (() => Promise<void> | void) | null;
   deleting?: boolean;
   groups?: WorkspaceGroup[];
+  allowGroups?: boolean;
+  allowAttachments?: boolean;
+};
+
+const initialValues: TaskFormValues = {
+  title: "",
+  description: "",
+  subject: "",
+  taskType: "atividade",
+  dueDate: new Date().toISOString().slice(0, 10),
+  priority: "media",
+  status: "pendente",
+  checklistRaw: "",
+  groupId: "",
+  file: null,
 };
 
 export function TaskForm({
@@ -35,20 +37,23 @@ export function TaskForm({
   onSubmit,
   submitting,
   initialValues: initialValuesProp,
-  mode = "create",
-  onDelete,
+  mode,
+  onDelete = null,
   deleting = false,
   groups = [],
+  allowGroups = true,
+  allowAttachments = true,
 }: TaskFormProps) {
-  const [values, setValues] = useState<TaskFormValues>(initialValues);
-
   const mergedInitialValues = useMemo(
     () => ({
       ...initialValues,
       ...(initialValuesProp ?? {}),
+      file: null,
     }),
     [initialValuesProp]
   );
+
+  const [values, setValues] = useState<TaskFormValues>(mergedInitialValues);
 
   useEffect(() => {
     if (open) {
@@ -56,14 +61,14 @@ export function TaskForm({
     } else {
       setValues(initialValues);
     }
-  }, [open, mergedInitialValues]);
+  }, [mergedInitialValues, open]);
 
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm">
       <div className="flex min-h-full items-end justify-center p-3 sm:items-center sm:p-4">
-        <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-panel">
+        <div className="flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-panel">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4 sm:px-6 sm:py-5">
             <div>
               <h2 className="text-xl font-bold text-slate-900 sm:text-2xl">
@@ -106,7 +111,7 @@ export function TaskForm({
                     value={values.subject}
                     onChange={(e) => setValues((prev) => ({ ...prev, subject: e.target.value }))}
                     className="h-12 rounded-2xl border border-slate-200 px-4"
-                    placeholder="Ex.: Ciências"
+                    placeholder="Ex.: Matemática"
                   />
                 </label>
               </div>
@@ -126,9 +131,7 @@ export function TaskForm({
                   <span className="text-sm font-medium text-slate-700">Tipo</span>
                   <select
                     value={values.taskType}
-                    onChange={(e) =>
-                      setValues((prev) => ({ ...prev, taskType: e.target.value as TaskFormValues["taskType"] }))
-                    }
+                    onChange={(e) => setValues((prev) => ({ ...prev, taskType: e.target.value as TaskFormValues["taskType"] }))}
                     className="h-12 rounded-2xl border border-slate-200 px-4"
                   >
                     <option value="prova">Prova</option>
@@ -142,9 +145,7 @@ export function TaskForm({
                   <span className="text-sm font-medium text-slate-700">Prioridade</span>
                   <select
                     value={values.priority}
-                    onChange={(e) =>
-                      setValues((prev) => ({ ...prev, priority: e.target.value as TaskFormValues["priority"] }))
-                    }
+                    onChange={(e) => setValues((prev) => ({ ...prev, priority: e.target.value as TaskFormValues["priority"] }))}
                     className="h-12 rounded-2xl border border-slate-200 px-4"
                   >
                     <option value="alta">Alta</option>
@@ -157,9 +158,7 @@ export function TaskForm({
                   <span className="text-sm font-medium text-slate-700">Status</span>
                   <select
                     value={values.status}
-                    onChange={(e) =>
-                      setValues((prev) => ({ ...prev, status: e.target.value as TaskFormValues["status"] }))
-                    }
+                    onChange={(e) => setValues((prev) => ({ ...prev, status: e.target.value as TaskFormValues["status"] }))}
                     className="h-12 rounded-2xl border border-slate-200 px-4"
                   >
                     <option value="pendente">Pendente</option>
@@ -182,24 +181,26 @@ export function TaskForm({
                   </div>
                 </label>
 
-                <label className="grid gap-2">
-                  <span className="text-sm font-medium text-slate-700">Grupo</span>
-                  <div className="relative">
-                    <select
-                      value={values.groupId}
-                      onChange={(e) => setValues((prev) => ({ ...prev, groupId: e.target.value }))}
-                      className="h-12 w-full rounded-2xl border border-slate-200 px-4 pr-11"
-                    >
-                      <option value="">Sem grupo</option>
-                      {groups.map((group) => (
-                        <option key={group.id} value={group.id}>
-                          {group.name}
-                        </option>
-                      ))}
-                    </select>
-                    <Users className="pointer-events-none absolute right-4 top-3.5 h-5 w-5 text-slate-400" />
-                  </div>
-                </label>
+                {allowGroups ? (
+                  <label className="grid gap-2">
+                    <span className="text-sm font-medium text-slate-700">Grupo</span>
+                    <div className="relative">
+                      <select
+                        value={values.groupId}
+                        onChange={(e) => setValues((prev) => ({ ...prev, groupId: e.target.value }))}
+                        className="h-12 w-full rounded-2xl border border-slate-200 px-4 pr-11"
+                      >
+                        <option value="">Sem grupo</option>
+                        {groups.map((group) => (
+                          <option key={group.id} value={group.id}>
+                            {group.name}
+                          </option>
+                        ))}
+                      </select>
+                      <Users className="pointer-events-none absolute right-4 top-3.5 h-5 w-5 text-slate-400" />
+                    </div>
+                  </label>
+                ) : null}
               </div>
 
               <label className="grid gap-2">
@@ -215,27 +216,29 @@ export function TaskForm({
                 </div>
               </label>
 
-              <label className="grid gap-2">
-                <span className="text-sm font-medium text-slate-700">Anexo</span>
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div className="flex items-center gap-3 text-slate-600">
-                      <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white">
-                        <FileUp className="h-5 w-5" />
+              {allowAttachments ? (
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-slate-700">Anexo</span>
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div className="flex items-center gap-3 text-slate-600">
+                        <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white">
+                          <FileUp className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <p className="font-medium">Selecionar arquivo</p>
+                          <p className="text-sm text-slate-500">Opcional</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="font-medium">Selecionar arquivo</p>
-                        <p className="text-sm text-slate-500">Opcional</p>
-                      </div>
+                      <input
+                        type="file"
+                        onChange={(e) => setValues((prev) => ({ ...prev, file: e.target.files?.[0] ?? null }))}
+                        className="block w-full max-w-xs rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600"
+                      />
                     </div>
-                    <input
-                      type="file"
-                      onChange={(e) => setValues((prev) => ({ ...prev, file: e.target.files?.[0] ?? null }))}
-                      className="block w-full max-w-xs rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600"
-                    />
                   </div>
-                </div>
-              </label>
+                </label>
+              ) : null}
             </div>
 
             <div className="mt-5 flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-between">
@@ -266,10 +269,9 @@ export function TaskForm({
                 <button
                   type="submit"
                   disabled={submitting || deleting}
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+                  className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  <Save className="h-4 w-4" />
-                  {submitting ? "Salvando..." : mode === "edit" ? "Salvar alterações" : "Salvar tarefa"}
+                  {submitting ? "Salvando..." : mode === "edit" ? "Salvar alterações" : "Criar tarefa"}
                 </button>
               </div>
             </div>
