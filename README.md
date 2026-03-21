@@ -33,7 +33,8 @@ ADMIN_EMAILS=voce@email.com,outro@email.com
 1. Crie o projeto
 2. Rode `supabase/schema.sql` no SQL Editor
 3. Desligue `Authentication > Providers > Email > Confirm email`
-4. Crie o bucket `task-files` se ele não existir após o SQL
+4. O SQL já faz backfill de perfis antigos e libera automaticamente o plano gratuito para espaços individuais antigos sem plano
+5. Crie o bucket `task-files` se ele não existir após o SQL
 
 ## Rodar localmente
 ```bash
@@ -68,3 +69,7 @@ Nele você consegue:
 - Login limpo, sem vitrine de planos para escolher antes de entrar
 - Área de configuração separada da área de planos
 - Painel admin separado do uso normal do app
+
+## Atualização instantânea de plano
+- quando o admin altera o plano no painel, o workspace do usuário recebe a mudança automaticamente
+- para workspaces antigos sem plano, o sistema tenta corrigir no carregamento e o SQL também faz o backfill

@@ -32,6 +32,12 @@ export async function GET(request: NextRequest) {
     }
 
     const client = createServiceRoleClient();
+    const [backfillProfiles, backfillPlans] = await Promise.all([
+      client.rpc("backfill_user_profiles"),
+      client.rpc("backfill_missing_free_plans"),
+    ]);
+    if (backfillProfiles.error) throw backfillProfiles.error;
+    if (backfillPlans.error) throw backfillPlans.error;
 
     const [workspacesRes, profilesRes, membersRes, plansRes] = await Promise.all([
       client.from("workspaces").select("*").order("created_at", { ascending: false }),

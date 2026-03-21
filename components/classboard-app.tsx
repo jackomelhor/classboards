@@ -183,12 +183,31 @@ function normalizePlan(workspace: Workspace | null, plan: WorkspacePlan | null):
       workspace_id: workspace.id,
       plan_code: "individual_free",
       status: "active",
-      notes: null,
+      notes: "Plano gratuito ativo.",
       granted_by: null,
     };
   }
 
   return null;
+}
+
+async function ensureFreePlanForWorkspace(client: NonNullable<typeof supabase>, workspace: Workspace) {
+  if (workspace.workspace_type !== "individual") {
+    const response = await client.from("workspace_plans").select("*").eq("workspace_id", workspace.id).maybeSingle();
+    if (response.error) throw response.error;
+    return (response.data as WorkspacePlan | null) ?? null;
+  }
+
+  const firstTry = await client.from("workspace_plans").select("*").eq("workspace_id", workspace.id).maybeSingle();
+  if (firstTry.error) throw firstTry.error;
+  if (firstTry.data) return firstTry.data as WorkspacePlan;
+
+  const ensureResponse = await client.rpc("ensure_default_workspace_plan", { target_workspace_id: workspace.id });
+  if (ensureResponse.error) throw ensureResponse.error;
+
+  const secondTry = await client.from("workspace_plans").select("*").eq("workspace_id", workspace.id).maybeSingle();
+  if (secondTry.error) throw secondTry.error;
+  return (secondTry.data as WorkspacePlan | null) ?? null;
 }
 
 async function uploadAttachment(file: File, userId: string) {
@@ -305,6 +324,56 @@ export function ClassBoardApp() {
       void loadAdminRows();
     }
   }, [localMode, session?.user?.id]);
+
+  useEffect(() => {
+    if (localMode || !supabase || !workspace?.id) return;
+
+    const client = supabase;
+    const channel = client
+      .channel(`workspace-plan-${workspace.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "workspace_plans", filter: `workspace_id=eq.${workspace.id}` },
+        async () => {
+          try {
+            const nextPlan = await ensureFreePlanForWorkspace(client, workspace);
+            const normalized = normalizePlan(workspace, nextPlan);
+            setWorkspacePlan(normalized);
+            setSelectedPlanCode(normalized?.plan_code ?? "individual_free");
+          } catch (error) {
+            const nextMessage = error instanceof Error ? error.message : "Não foi possível atualizar o plano em tempo real.";
+            setErrorMessage(nextMessage);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [localMode, workspace?.id, workspace?.workspace_type]);
+
+  useEffect(() => {
+    if (localMode || !supabase || !session?.user || !isAdmin) return;
+
+    const client = supabase;
+    const channel = client
+      .channel(`admin-refresh-${session.user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "workspaces" }, () => {
+        void loadAdminRows();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "workspace_plans" }, () => {
+        void loadAdminRows();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "workspace_members" }, () => {
+        void loadAdminRows();
+      })
+      .subscribe();
+
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [localMode, isAdmin, session?.user?.id]);
 
   useEffect(() => {
     if (notificationPermission !== "granted" || !tasks.length) return;
@@ -429,19 +498,15 @@ export function ClassBoardApp() {
       setWorkspace(currentWorkspace);
       setWorkspaceForm(workspaceToFormValues(currentWorkspace));
 
-      const [planResponse] = await Promise.all([
-        client.from("workspace_plans").select("*").eq("workspace_id", currentWorkspace.id).maybeSingle(),
+      await Promise.all([
         loadTasks(currentWorkspace.id),
         loadGroups(currentWorkspace.id),
         loadMembers(currentWorkspace.id),
       ]);
 
-      if (planResponse.error) throw planResponse.error;
-      const nextPlan = normalizePlan(currentWorkspace, (planResponse.data as WorkspacePlan | null) ?? null);
+      const nextPlan = normalizePlan(currentWorkspace, await ensureFreePlanForWorkspace(client, currentWorkspace));
       setWorkspacePlan(nextPlan);
-      if (nextPlan) {
-        setSelectedPlanCode(nextPlan.plan_code);
-      }
+      setSelectedPlanCode(nextPlan?.plan_code ?? "individual_free");
 
       setScreen(nextPlan?.status === "active" ? "dashboard" : "workspace");
     } catch (error) {

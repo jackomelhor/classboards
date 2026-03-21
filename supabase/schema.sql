@@ -44,6 +44,32 @@ create trigger on_auth_user_created_classboard
 after insert on auth.users
 for each row execute procedure public.handle_new_user_profile();
 
+
+create or replace function public.backfill_user_profiles()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  affected_count integer := 0;
+begin
+  insert into public.user_profiles (user_id, full_name, email)
+  select
+    au.id,
+    nullif(au.raw_user_meta_data ->> 'full_name', ''),
+    au.email
+  from auth.users au
+  where au.email is not null
+  on conflict (user_id) do update
+  set full_name = coalesce(excluded.full_name, public.user_profiles.full_name),
+      email = excluded.email;
+
+  get diagnostics affected_count = row_count;
+  return affected_count;
+end;
+$$;
+
 create or replace function public.email_exists(candidate_email text)
 returns boolean
 language sql
@@ -69,6 +95,26 @@ create table if not exists public.workspaces (
   invite_code text not null unique default public.generate_invite_code(),
   created_at timestamptz not null default now()
 );
+
+
+create or replace function public.handle_workspace_default_plan()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.workspace_type = 'individual' then
+    perform public.ensure_default_workspace_plan(new.id);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists workspace_default_plan_trigger on public.workspaces;
+create trigger workspace_default_plan_trigger
+after insert on public.workspaces
+for each row execute procedure public.handle_workspace_default_plan();
 
 create table if not exists public.workspace_members (
   id uuid primary key default gen_random_uuid(),
@@ -108,6 +154,105 @@ create table if not exists public.workspace_plans (
   activated_at timestamptz,
   updated_at timestamptz not null default now()
 );
+
+
+create or replace function public.ensure_default_workspace_plan(target_workspace_id uuid)
+returns public.workspace_plans
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  existing_plan public.workspace_plans;
+  target_workspace public.workspaces;
+begin
+  select * into target_workspace
+  from public.workspaces
+  where id = target_workspace_id;
+
+  if not found then
+    raise exception 'Workspace não encontrado.';
+  end if;
+
+  if auth.uid() is not null and not exists (
+    select 1
+    from public.workspace_members wm
+    where wm.workspace_id = target_workspace_id
+      and wm.user_id = auth.uid()
+  ) and not exists (
+    select 1
+    from public.workspaces w
+    where w.id = target_workspace_id
+      and w.owner_id = auth.uid()
+  ) then
+    raise exception 'Acesso negado.';
+  end if;
+
+  select * into existing_plan
+  from public.workspace_plans
+  where workspace_id = target_workspace_id;
+
+  if found then
+    return existing_plan;
+  end if;
+
+  if target_workspace.workspace_type <> 'individual' then
+    return null;
+  end if;
+
+  insert into public.workspace_plans (
+    workspace_id,
+    plan_code,
+    status,
+    notes,
+    activated_at
+  )
+  values (
+    target_workspace_id,
+    'individual_free',
+    'active',
+    'Plano gratuito liberado automaticamente.',
+    now()
+  )
+  returning * into existing_plan;
+
+  return existing_plan;
+end;
+$$;
+
+grant execute on function public.ensure_default_workspace_plan(uuid) to authenticated;
+
+create or replace function public.backfill_missing_free_plans()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  affected_count integer := 0;
+begin
+  insert into public.workspace_plans (
+    workspace_id,
+    plan_code,
+    status,
+    notes,
+    activated_at
+  )
+  select
+    w.id,
+    'individual_free',
+    'active',
+    'Plano gratuito liberado automaticamente.',
+    now()
+  from public.workspaces w
+  left join public.workspace_plans wp on wp.workspace_id = w.id
+  where w.workspace_type = 'individual'
+    and wp.workspace_id is null;
+
+  get diagnostics affected_count = row_count;
+  return affected_count;
+end;
+$$;
 
 create or replace function public.touch_workspace_plans_updated_at()
 returns trigger
@@ -482,3 +627,7 @@ using (
 insert into storage.buckets (id, name, public)
 values ('task-files', 'task-files', true)
 on conflict (id) do nothing;
+
+
+select public.backfill_user_profiles();
+select public.backfill_missing_free_plans();
