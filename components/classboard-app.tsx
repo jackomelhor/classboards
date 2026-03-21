@@ -65,7 +65,7 @@ type GroupFormValues = {
   description: string;
 };
 
-const INSTAGRAM_URL = "https://instagram.com/vt_.rodrxgs";
+const INSTAGRAM_URL = "https://www.instagram.com/vt._rodrxgs/";
 
 const emptyWorkspaceForm: WorkspaceFormValues = {
   schoolName: "",
@@ -228,7 +228,7 @@ export function ClassBoardApp() {
 
   const [session, setSession] = useState<Session | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
-  const [screen, setScreen] = useState<Screen>("plans");
+  const [screen, setScreen] = useState<Screen>("workspace");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
@@ -388,7 +388,7 @@ export function ClassBoardApp() {
 
   async function bootstrapWorkspace(user: User) {
     if (localMode) {
-      setScreen("plans");
+      setScreen("workspace");
       return;
     }
 
@@ -416,13 +416,13 @@ export function ClassBoardApp() {
         setMembers([]);
         setWorkspaceForm(emptyWorkspaceForm);
         setSelectedPlanCode("individual_free");
-        setScreen("plans");
+        setScreen("workspace");
         return;
       }
 
       const currentWorkspace = Array.isArray(row.workspaces) ? row.workspaces[0] : row.workspaces;
       if (!currentWorkspace) {
-        setScreen("plans");
+        setScreen("workspace");
         return;
       }
 
@@ -443,7 +443,7 @@ export function ClassBoardApp() {
         setSelectedPlanCode(nextPlan.plan_code);
       }
 
-      setScreen(nextPlan?.status === "pending" ? "plans" : "dashboard");
+      setScreen(nextPlan?.status === "active" ? "dashboard" : "workspace");
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : "Não foi possível carregar os dados.";
       setErrorMessage(nextMessage);
@@ -581,7 +581,7 @@ export function ClassBoardApp() {
       setGroups([]);
       setMembers([]);
       setWorkspaceForm(emptyWorkspaceForm);
-      setScreen("plans");
+      setScreen("workspace");
       return;
     }
 
@@ -599,7 +599,7 @@ export function ClassBoardApp() {
     setGroups([]);
     setMembers([]);
     setWorkspaceForm(emptyWorkspaceForm);
-    setScreen("plans");
+    setScreen("workspace");
   }
 
   async function handleSaveWorkspace(event?: FormEvent<HTMLFormElement>) {
@@ -609,24 +609,17 @@ export function ClassBoardApp() {
     setMessage(null);
 
     try {
-      const currentPlan = PLAN_DEFINITIONS[selectedPlanCode];
+      const freePlan = PLAN_DEFINITIONS.individual_free;
+      const currentActivePlan = getPlanDefinition(activePlan?.plan_code ?? "individual_free") ?? freePlan;
       const payload = {
         school_name: workspaceForm.schoolName.trim() || null,
         name: workspaceForm.className.trim(),
-        workspace_type: currentPlan.workspaceType as WorkspaceType,
+        workspace_type: (workspace ? currentActivePlan.workspaceType : freePlan.workspaceType) as WorkspaceType,
       };
 
       if (!payload.name) {
         throw new Error("Informe o nome do espaço.");
       }
-
-      const isSamePaidPlan = workspacePlan?.plan_code === selectedPlanCode && workspacePlan?.status === "active";
-      const nextStatus: PlanStatus = currentPlan.isFree ? "active" : isSamePaidPlan ? "active" : "pending";
-      const nextNotes = currentPlan.isFree
-        ? null
-        : isSamePaidPlan
-        ? workspacePlan?.notes ?? "Plano liberado manualmente pelo proprietário."
-        : "Solicitação criada pelo usuário.";
 
       if (localMode) {
         const ownerId = session?.user?.id ?? "local-user";
@@ -636,16 +629,17 @@ export function ClassBoardApp() {
           invite_code: workspace?.invite_code ?? Math.random().toString(36).slice(2, 10).toUpperCase(),
           ...payload,
         };
-        const nextPlan: WorkspacePlan = {
-          id: workspacePlan?.id ?? crypto.randomUUID(),
+        const nextPlan: WorkspacePlan = workspacePlan ?? {
+          id: crypto.randomUUID(),
           workspace_id: nextWorkspace.id,
-          plan_code: selectedPlanCode,
-          status: nextStatus,
-          notes: nextNotes,
+          plan_code: "individual_free",
+          status: "active",
+          notes: "Plano gratuito liberado automaticamente.",
           granted_by: null,
         };
         setWorkspace(nextWorkspace);
         setWorkspacePlan(nextPlan);
+        setSelectedPlanCode(nextPlan.plan_code);
         setMembers([
           {
             id: crypto.randomUUID(),
@@ -659,8 +653,8 @@ export function ClassBoardApp() {
             },
           },
         ]);
-        setScreen(nextStatus === "active" ? "dashboard" : "plans");
-        setMessage(currentPlan.isFree ? "Espaço criado." : "Solicitação enviada para análise manual.");
+        setScreen("dashboard");
+        setMessage(workspace ? "Configurações atualizadas." : "Espaço criado com plano gratuito ativo.");
         return;
       }
 
@@ -685,18 +679,23 @@ export function ClassBoardApp() {
 
         const insertedPlan = await client
           .from("workspace_plans")
-          .insert({
-            workspace_id: insertedWorkspace.data.id,
-            plan_code: selectedPlanCode,
-            status: nextStatus,
-            notes: nextNotes,
-          })
+          .upsert(
+            {
+              workspace_id: insertedWorkspace.data.id,
+              plan_code: "individual_free",
+              status: "active",
+              notes: "Plano gratuito liberado automaticamente.",
+              activated_at: new Date().toISOString(),
+            },
+            { onConflict: "workspace_id" }
+          )
           .select("*")
           .single();
         if (insertedPlan.error) throw insertedPlan.error;
 
         setWorkspace(insertedWorkspace.data as Workspace);
         setWorkspacePlan(insertedPlan.data as WorkspacePlan);
+        setSelectedPlanCode("individual_free");
         setWorkspaceForm(workspaceToFormValues(insertedWorkspace.data as Workspace));
         await loadMembers(insertedWorkspace.data.id);
       } else {
@@ -708,29 +707,32 @@ export function ClassBoardApp() {
           .single();
         if (updatedWorkspace.error) throw updatedWorkspace.error;
 
-        const updatedPlan = await client
-          .from("workspace_plans")
-          .upsert(
-            {
-              workspace_id: workspace.id,
-              plan_code: selectedPlanCode,
-              status: nextStatus,
-              notes: nextNotes,
-              activated_at: nextStatus === "active" ? new Date().toISOString() : null,
-            },
-            { onConflict: "workspace_id" }
-          )
-          .select("*")
-          .single();
-        if (updatedPlan.error) throw updatedPlan.error;
+        if (!workspacePlan) {
+          const ensuredPlan = await client
+            .from("workspace_plans")
+            .upsert(
+              {
+                workspace_id: workspace.id,
+                plan_code: "individual_free",
+                status: "active",
+                notes: "Plano gratuito liberado automaticamente.",
+                activated_at: new Date().toISOString(),
+              },
+              { onConflict: "workspace_id" }
+            )
+            .select("*")
+            .single();
+          if (ensuredPlan.error) throw ensuredPlan.error;
+          setWorkspacePlan(ensuredPlan.data as WorkspacePlan);
+          setSelectedPlanCode("individual_free");
+        }
 
         setWorkspace(updatedWorkspace.data as Workspace);
-        setWorkspacePlan(updatedPlan.data as WorkspacePlan);
         setWorkspaceForm(workspaceToFormValues(updatedWorkspace.data as Workspace));
       }
 
-      setScreen(nextStatus === "active" ? "dashboard" : "plans");
-      setMessage(currentPlan.isFree ? "Espaço salvo." : "Solicitação enviada para liberação manual.");
+      setScreen("dashboard");
+      setMessage(workspace ? "Configurações atualizadas." : "Espaço criado com plano gratuito ativo.");
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : "Não foi possível salvar o espaço.";
       setErrorMessage(nextMessage);
@@ -1146,11 +1148,11 @@ export function ClassBoardApp() {
   }
 
   const navItems = [
-    { id: "plans" as Screen, label: "Planos", icon: <Crown className="h-5 w-5" /> },
     { id: "dashboard" as Screen, label: "Painel", icon: <LayoutDashboard className="h-5 w-5" />, hidden: !workspace },
     { id: "tasks" as Screen, label: "Tarefas", icon: <ClipboardList className="h-5 w-5" />, hidden: !workspace },
     { id: "calendar" as Screen, label: "Calendário", icon: <CalendarDays className="h-5 w-5" />, hidden: !workspace },
-    { id: "workspace" as Screen, label: "Espaço", icon: <Settings className="h-5 w-5" />, hidden: !workspace },
+    { id: "workspace" as Screen, label: "Configuração", icon: <Settings className="h-5 w-5" /> },
+    { id: "plans" as Screen, label: "Planos", icon: <Crown className="h-5 w-5" /> },
     { id: "admin" as Screen, label: "Admin", icon: <Shield className="h-5 w-5" />, hidden: !isAdmin },
   ].filter((item) => !item.hidden);
 
@@ -1180,15 +1182,18 @@ export function ClassBoardApp() {
               </div>
 
               <div className="grid gap-3 sm:grid-cols-3">
-                {PLAN_ORDER.map((planCode) => {
-                  const plan = PLAN_DEFINITIONS[planCode];
-                  return (
-                    <div key={plan.code} className="rounded-3xl border border-white/10 bg-white/10 p-4 text-sm text-blue-50">
-                      <p className="font-semibold">{plan.title}</p>
-                      <p className="mt-2 text-xs text-blue-100">{plan.subtitle}</p>
-                    </div>
-                  );
-                })}
+                <div className="rounded-3xl border border-white/10 bg-white/10 p-4 text-sm text-blue-50">
+                  <p className="font-semibold">Organização da rotina</p>
+                  <p className="mt-2 text-xs text-blue-100">Centralize tarefas, prazos, provas e apresentações em um painel só.</p>
+                </div>
+                <div className="rounded-3xl border border-white/10 bg-white/10 p-4 text-sm text-blue-50">
+                  <p className="font-semibold">Colaboração simples</p>
+                  <p className="mt-2 text-xs text-blue-100">Monte seu espaço, acompanhe membros e organize grupos quando o plano permitir.</p>
+                </div>
+                <div className="rounded-3xl border border-white/10 bg-white/10 p-4 text-sm text-blue-50">
+                  <p className="font-semibold">Controle total</p>
+                  <p className="mt-2 text-xs text-blue-100">Você pode usar o app normalmente e administrar liberações em uma área separada.</p>
+                </div>
               </div>
 
               <a
@@ -1197,7 +1202,7 @@ export function ClassBoardApp() {
                 rel="noreferrer"
                 className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/15"
               >
-                <Instagram className="h-4 w-4" /> Falar com o proprietário @vt_.rodrxgs
+                <Instagram className="h-4 w-4" /> Falar com o proprietário @vt._rodrxgs
               </a>
             </div>
           </section>
@@ -1398,10 +1403,6 @@ export function ClassBoardApp() {
                   <PlansScreen
                     selectedPlanCode={selectedPlanCode}
                     onSelectPlan={setSelectedPlanCode}
-                    workspaceForm={workspaceForm}
-                    onWorkspaceFormChange={setWorkspaceForm}
-                    onSubmit={handleSaveWorkspace}
-                    loading={savingWorkspace}
                     currentPlan={activePlan}
                     workspace={workspace}
                   />
@@ -1566,9 +1567,9 @@ export function ClassBoardApp() {
                   </Panel>
                 )}
 
-                {workspace && screen === "workspace" && (
+                {screen === "workspace" && (
                   <div className="space-y-5">
-                    <Panel title="Espaço">
+                    <Panel title={workspace ? "Configuração do espaço" : "Configuração inicial"}>
                       <form className="grid gap-5 lg:grid-cols-[1fr_0.8fr]" onSubmit={handleSaveWorkspace}>
                         <div className="grid gap-5">
                           <label className="grid gap-2">
@@ -1577,6 +1578,7 @@ export function ClassBoardApp() {
                               value={workspaceForm.schoolName}
                               onChange={(e) => setWorkspaceForm((prev) => ({ ...prev, schoolName: e.target.value }))}
                               className="h-12 rounded-2xl border border-slate-200 px-4"
+                              placeholder="Ex.: Escola Modelo"
                             />
                           </label>
                           <label className="grid gap-2">
@@ -1586,29 +1588,14 @@ export function ClassBoardApp() {
                               value={workspaceForm.className}
                               onChange={(e) => setWorkspaceForm((prev) => ({ ...prev, className: e.target.value }))}
                               className="h-12 rounded-2xl border border-slate-200 px-4"
+                              placeholder="Ex.: Turma 2ºB"
                             />
                           </label>
-                          <div>
-                            <p className="text-sm font-medium text-slate-700">Plano selecionado</p>
-                            <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                              {PLAN_ORDER.map((planCode) => {
-                                const plan = PLAN_DEFINITIONS[planCode];
-                                const selected = selectedPlanCode === planCode;
-                                return (
-                                  <button
-                                    key={plan.code}
-                                    type="button"
-                                    onClick={() => setSelectedPlanCode(plan.code)}
-                                    className={`rounded-3xl border p-4 text-left transition ${
-                                      selected ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:bg-slate-50"
-                                    }`}
-                                  >
-                                    <p className="font-semibold text-slate-900">{plan.title}</p>
-                                    <p className="mt-2 text-sm text-slate-500">{plan.subtitle}</p>
-                                  </button>
-                                );
-                              })}
-                            </div>
+                          <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                            <p className="text-sm font-semibold text-slate-900">Plano padrão da conta</p>
+                            <p className="mt-2 text-sm text-slate-600">
+                              Toda conta nova começa com o <strong>Individual Gratuito</strong>. Para migrar para Grupo ou Turma, use a área de planos ou fale com o proprietário.
+                            </p>
                           </div>
                           <div className="flex justify-end">
                             <button
@@ -1616,79 +1603,104 @@ export function ClassBoardApp() {
                               disabled={savingWorkspace}
                               className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
                             >
-                              {savingWorkspace ? "Salvando..." : "Salvar"}
+                              {savingWorkspace ? "Salvando..." : workspace ? "Salvar alterações" : "Criar espaço"}
                             </button>
                           </div>
                         </div>
                         <div className="space-y-5">
-                          <InfoCard title="Convite" icon={<Copy className="h-5 w-5 text-brand-600" />}>
-                            <p className="text-sm text-slate-500">Código</p>
-                            <p className="mt-2 text-2xl font-bold text-slate-900">{workspace.invite_code}</p>
-                            <button
-                              type="button"
-                              onClick={copyInviteLink}
-                              disabled={!canInviteMembers}
-                              className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          <InfoCard title="Plano atual" icon={<Crown className="h-5 w-5 text-brand-600" />}>
+                            <p className="font-semibold text-slate-900">{getPlanDefinition(activePlan?.plan_code ?? "individual_free")?.title ?? "Individual Gratuito"}</p>
+                            <p className="mt-2 text-sm text-slate-600">
+                              {activePlan?.status === "active"
+                                ? "Seu acesso atual está liberado."
+                                : "Seu acesso ainda não está liberado."}
+                            </p>
+                          </InfoCard>
+                          <InfoCard title="Contato" icon={<Instagram className="h-5 w-5 text-brand-600" />}>
+                            <a
+                              href={INSTAGRAM_URL}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
                             >
-                              <Copy className="h-4 w-4" /> Copiar link
-                            </button>
+                              <Instagram className="h-4 w-4" /> @vt._rodrxgs
+                            </a>
                           </InfoCard>
-                          <InfoCard title="Membros" icon={<Users className="h-5 w-5 text-brand-600" />}>
-                            <div className="space-y-3">
-                              {members.length ? members.map((member) => (
-                                <div key={member.id} className="rounded-2xl border border-slate-200 px-4 py-3">
-                                  <p className="font-medium text-slate-900">{member.profile?.full_name || member.profile?.email || "Usuário"}</p>
-                                  <p className="text-sm text-slate-500">{member.profile?.email || "Sem email"} • {member.role}</p>
-                                </div>
-                              )) : <EmptyState text="Sem membros." compact />}
-                            </div>
-                          </InfoCard>
+                          {workspace ? (
+                            <InfoCard title="Convite" icon={<Copy className="h-5 w-5 text-brand-600" />}>
+                              <p className="text-sm text-slate-500">Código</p>
+                              <p className="mt-2 text-2xl font-bold text-slate-900">{workspace.invite_code}</p>
+                              <button
+                                type="button"
+                                onClick={copyInviteLink}
+                                disabled={!canInviteMembers}
+                                className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <Copy className="h-4 w-4" /> Copiar link
+                              </button>
+                            </InfoCard>
+                          ) : null}
                         </div>
                       </form>
                     </Panel>
 
-                    <Panel title="Grupos">
-                      {!canUseGroups ? (
-                        <EmptyState text="Seu plano atual não permite grupos." />
-                      ) : (
-                        <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-                          <form className="grid gap-4" onSubmit={handleCreateGroup}>
-                            <label className="grid gap-2">
-                              <span className="text-sm font-medium text-slate-700">Nome</span>
-                              <input
-                                value={groupForm.name}
-                                onChange={(e) => setGroupForm((prev) => ({ ...prev, name: e.target.value }))}
-                                className="h-12 rounded-2xl border border-slate-200 px-4"
-                                placeholder="Ex.: Grupo de Física"
-                              />
-                            </label>
-                            <label className="grid gap-2">
-                              <span className="text-sm font-medium text-slate-700">Descrição</span>
-                              <textarea
-                                value={groupForm.description}
-                                onChange={(e) => setGroupForm((prev) => ({ ...prev, description: e.target.value }))}
-                                className="min-h-[120px] rounded-2xl border border-slate-200 px-4 py-3"
-                              />
-                            </label>
-                            <button
-                              type="submit"
-                              disabled={savingGroup}
-                              className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
-                            >
-                              {savingGroup ? "Salvando..." : "Criar grupo"}
-                            </button>
-                          </form>
+                    {workspace ? (
+                      <>
+                        <Panel title="Membros">
                           <div className="space-y-3">
-                            {groups.length ? groups.map((group) => (
-                              <div key={group.id} className="rounded-2xl border border-slate-200 px-4 py-4">
-                                <p className="font-semibold text-slate-900">{group.name}</p>
-                                <p className="mt-1 text-sm text-slate-500">{group.description || "Sem descrição"}</p>
+                            {members.length ? members.map((member) => (
+                              <div key={member.id} className="rounded-2xl border border-slate-200 px-4 py-3">
+                                <p className="font-medium text-slate-900">{member.profile?.full_name || member.profile?.email || "Usuário"}</p>
+                                <p className="text-sm text-slate-500">{member.profile?.email || "Sem email"} • {member.role}</p>
                               </div>
-                            )) : <EmptyState text="Nenhum grupo criado." />}
+                            )) : <EmptyState text="Sem membros." compact />}
                           </div>
-                        </div>
-                      )}
-                    </Panel>
+                        </Panel>
+
+                        <Panel title="Grupos">
+                          {!canUseGroups ? (
+                            <EmptyState text="Seu plano atual não permite grupos." />
+                          ) : (
+                            <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+                              <form className="grid gap-4" onSubmit={handleCreateGroup}>
+                                <label className="grid gap-2">
+                                  <span className="text-sm font-medium text-slate-700">Nome</span>
+                                  <input
+                                    value={groupForm.name}
+                                    onChange={(e) => setGroupForm((prev) => ({ ...prev, name: e.target.value }))}
+                                    className="h-12 rounded-2xl border border-slate-200 px-4"
+                                    placeholder="Ex.: Grupo de Física"
+                                  />
+                                </label>
+                                <label className="grid gap-2">
+                                  <span className="text-sm font-medium text-slate-700">Descrição</span>
+                                  <textarea
+                                    value={groupForm.description}
+                                    onChange={(e) => setGroupForm((prev) => ({ ...prev, description: e.target.value }))}
+                                    className="min-h-[120px] rounded-2xl border border-slate-200 px-4 py-3"
+                                  />
+                                </label>
+                                <button
+                                  type="submit"
+                                  disabled={savingGroup}
+                                  className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+                                >
+                                  {savingGroup ? "Salvando..." : "Criar grupo"}
+                                </button>
+                              </form>
+                              <div className="space-y-3">
+                                {groups.length ? groups.map((group) => (
+                                  <div key={group.id} className="rounded-2xl border border-slate-200 px-4 py-4">
+                                    <p className="font-semibold text-slate-900">{group.name}</p>
+                                    <p className="mt-1 text-sm text-slate-500">{group.description || "Sem descrição"}</p>
+                                  </div>
+                                )) : <EmptyState text="Nenhum grupo criado." />}
+                              </div>
+                            </div>
+                          )}
+                        </Panel>
+                      </>
+                    ) : null}
                   </div>
                 )}
 
@@ -1774,7 +1786,7 @@ export function ClassBoardApp() {
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 p-3 shadow-panel xl:hidden">
         <div className="mx-auto flex max-w-3xl items-center justify-around gap-2">
-          {navItems.slice(0, 5).map((item) => (
+          {navItems.map((item) => (
             <button
               key={item.id}
               type="button"
@@ -1811,7 +1823,7 @@ function BrandPanel({ onContact = false }: { onContact?: boolean }) {
           rel="noreferrer"
           className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 text-sm font-medium text-white transition hover:bg-white/10"
         >
-          <Instagram className="h-4 w-4" /> @vt_.rodrxgs
+          <Instagram className="h-4 w-4" /> @vt._rodrxgs
         </a>
       ) : null}
     </div>
@@ -1821,22 +1833,16 @@ function BrandPanel({ onContact = false }: { onContact?: boolean }) {
 function PlansScreen({
   selectedPlanCode,
   onSelectPlan,
-  workspaceForm,
-  onWorkspaceFormChange,
-  onSubmit,
-  loading,
   currentPlan,
   workspace,
 }: {
   selectedPlanCode: PlanCode;
   onSelectPlan: (planCode: PlanCode) => void;
-  workspaceForm: WorkspaceFormValues;
-  onWorkspaceFormChange: (values: WorkspaceFormValues) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> | void;
-  loading: boolean;
   currentPlan: WorkspacePlan | null;
   workspace: Workspace | null;
 }) {
+  const currentDefinition = getPlanDefinition(currentPlan?.plan_code ?? "individual_free");
+
   return (
     <div className="space-y-5">
       <Panel title="Planos">
@@ -1871,57 +1877,52 @@ function PlansScreen({
         </div>
       </Panel>
 
-      <Panel title="Configuração inicial">
-        <form className="grid gap-5 lg:grid-cols-[1fr_0.8fr]" onSubmit={onSubmit}>
-          <div className="grid gap-5">
-            <label className="grid gap-2">
-              <span className="text-sm font-medium text-slate-700">Nome da escola</span>
-              <input
-                value={workspaceForm.schoolName}
-                onChange={(e) => onWorkspaceFormChange({ ...workspaceForm, schoolName: e.target.value })}
-                className="h-12 rounded-2xl border border-slate-200 px-4"
-                placeholder="Ex.: Escola Modelo"
-              />
-            </label>
-            <label className="grid gap-2">
-              <span className="text-sm font-medium text-slate-700">Nome do espaço</span>
-              <input
-                required
-                value={workspaceForm.className}
-                onChange={(e) => onWorkspaceFormChange({ ...workspaceForm, className: e.target.value })}
-                className="h-12 rounded-2xl border border-slate-200 px-4"
-                placeholder="Ex.: Turma 2ºB"
-              />
-            </label>
-            <div className="flex justify-end">
-              <button
-                type="submit"
-                disabled={loading}
-                className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand-600 px-5 font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {loading ? "Salvando..." : workspace ? "Atualizar" : "Criar espaço"}
-              </button>
+      <div className="grid gap-5 lg:grid-cols-[1fr_0.8fr]">
+        <Panel title="Plano atual e upgrade manual">
+          <div className="space-y-4">
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <p className="text-sm font-medium text-slate-500">Plano ativo</p>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{currentDefinition?.title ?? "Individual Gratuito"}</p>
+              <p className="mt-2 text-sm text-slate-600">
+                {currentPlan?.status === "active"
+                  ? "Seu plano atual está liberado e funcionando normalmente."
+                  : "Seu plano atual ainda não está ativo."}
+              </p>
+            </div>
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <p className="text-sm font-medium text-slate-500">Como pedir mudança de plano</p>
+              <p className="mt-2 text-sm text-slate-600">
+                Selecione o plano desejado acima e fale com o proprietário para liberar manualmente no painel admin.
+              </p>
+              <p className="mt-2 text-sm text-slate-600">
+                {workspace
+                  ? `Espaço atual: ${workspace.name}${workspace.school_name ? ` • ${workspace.school_name}` : ""}`
+                  : "Crie primeiro seu espaço na área de configuração para facilitar a liberação."}
+              </p>
             </div>
           </div>
-          <div className="space-y-5">
-            <InfoCard title="Contato" icon={<Instagram className="h-5 w-5 text-brand-600" />}>
-              <a
-                href={INSTAGRAM_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                <Instagram className="h-4 w-4" /> @vt_.rodrxgs
-              </a>
-            </InfoCard>
-            {currentPlan?.status === "pending" ? (
-              <InfoCard title="Status" icon={<AlertCircle className="h-5 w-5 text-amber-500" />}>
-                <p className="text-sm text-slate-600">Solicitação pendente de liberação manual.</p>
-              </InfoCard>
-            ) : null}
-          </div>
-        </form>
-      </Panel>
+        </Panel>
+
+        <div className="space-y-5">
+          <InfoCard title="Contato" icon={<Instagram className="h-5 w-5 text-brand-600" />}>
+            <a
+              href={INSTAGRAM_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <Instagram className="h-4 w-4" /> @vt._rodrxgs
+            </a>
+          </InfoCard>
+          <InfoCard title="Regras do produto" icon={<AlertCircle className="h-5 w-5 text-brand-600" />}>
+            <ul className="space-y-2 text-sm text-slate-600">
+              <li>• Toda conta nova começa no Individual Gratuito.</li>
+              <li>• Grupo e Turma são liberados manualmente pelo admin.</li>
+              <li>• O login continua limpo; planos ficam nesta área separada.</li>
+            </ul>
+          </InfoCard>
+        </div>
+      </div>
     </div>
   );
 }

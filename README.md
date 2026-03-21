@@ -53,8 +53,8 @@ Depois faça novo deploy.
 
 ## Fluxo de planos
 - `Individual Gratuito`: ativo imediatamente
-- `Grupo`: fica pendente até o admin liberar
-- `Turma`: fica pendente até o admin liberar
+- `Grupo`: liberado manualmente pelo admin quando você decidir
+- `Turma`: liberado manualmente pelo admin quando você decidir
 
 ## Painel admin
 O painel aparece para os emails definidos em `ADMIN_EMAILS`.
@@ -62,5 +62,9 @@ Nele você consegue:
 - liberar plano Individual Gratuito
 - liberar plano Grupo
 - liberar plano Turma
-- deixar pendente
 - inativar
+
+## Estrutura de navegação
+- Login limpo, sem vitrine de planos para escolher antes de entrar
+- Área de configuração separada da área de planos
+- Painel admin separado do uso normal do app
