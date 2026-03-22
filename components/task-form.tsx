@@ -18,12 +18,18 @@ type TaskFormProps = {
   allowAttachments?: boolean;
 };
 
+function getLocalDateInputValue() {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
 const initialValues: TaskFormValues = {
   title: "",
   description: "",
   subject: "",
   taskType: "atividade",
-  dueDate: new Date().toISOString().slice(0, 10),
+  dueDate: getLocalDateInputValue(),
   priority: "media",
   status: "pendente",
   checklistRaw: "",

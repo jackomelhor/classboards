@@ -145,6 +145,41 @@ function statusLabel(status: TaskStatus) {
   return labels[status];
 }
 
+function priorityLabel(priority: Priority) {
+  const labels: Record<Priority, string> = {
+    alta: "Alta",
+    media: "Média",
+    baixa: "Baixa",
+  };
+  return labels[priority];
+}
+
+function memberRoleLabel(role: string) {
+  if (role === "owner") return "Proprietário";
+  if (role === "member") return "Membro";
+  return role;
+}
+
+function planStatusLabel(status: PlanStatus | null | undefined) {
+  if (status === "active") return "Ativo";
+  if (status === "pending") return "Pendente";
+  if (status === "inactive") return "Inativo";
+  return "Sem registro";
+}
+
+function weekRangeLabel(weekStartIso: string) {
+  const weekStart = new Date(`${weekStartIso}T00:00:00`);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+
+  const formatter = new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+  });
+
+  return `${formatter.format(weekStart)} a ${formatter.format(weekEnd)}`;
+}
+
 function calculateProgress(items: ChecklistItem[]) {
   if (!items.length) return 0;
   const done = items.filter((item) => item.is_done).length;
@@ -275,6 +310,7 @@ export function ClassBoardApp() {
   const [message, setMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [calendarWeekStart, setCalendarWeekStart] = useState(() => startOfWeek().toISOString().slice(0, 10));
   const [adminRows, setAdminRows] = useState<AdminWorkspaceRow[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminSavingWorkspaceId, setAdminSavingWorkspaceId] = useState<string | null>(null);
@@ -421,15 +457,33 @@ export function ClassBoardApp() {
   const pendingCount = useMemo(() => tasks.filter((task) => task.status !== "concluida").length, [tasks]);
 
   const weeklyCalendar = useMemo(() => {
-    const weekStart = startOfWeek();
-    return Array.from({ length: 5 }).map((_, index) => {
+    const weekStart = new Date(`${calendarWeekStart}T00:00:00`);
+    return Array.from({ length: 7 }).map((_, index) => {
       const current = new Date(weekStart);
       current.setDate(weekStart.getDate() + index);
       const iso = current.toISOString().slice(0, 10);
-      const items = tasks.filter((task) => task.due_date === iso);
+      const items = tasks
+        .filter((task) => task.due_date === iso)
+        .sort((a, b) => a.title.localeCompare(b.title, "pt-BR"));
       const dayLabel = new Intl.DateTimeFormat("pt-BR", { weekday: "short" }).format(current).replace(".", "");
       return { iso, dayLabel, items };
     });
+  }, [calendarWeekStart, tasks]);
+
+  const calendarVisibleTasks = useMemo(() => {
+    return weeklyCalendar.flatMap((day) =>
+      day.items.map((task) => ({
+        ...task,
+        calendarDate: day.iso,
+      }))
+    );
+  }, [weeklyCalendar]);
+
+  const upcomingCalendarTasks = useMemo(() => {
+    return [...tasks]
+      .filter((task) => diffInDays(task.due_date) >= 0)
+      .sort((a, b) => a.due_date.localeCompare(b.due_date) || a.title.localeCompare(b.title, "pt-BR"))
+      .slice(0, 12);
   }, [tasks]);
 
   const filteredTasks = useMemo(() => {
@@ -1138,6 +1192,27 @@ export function ClassBoardApp() {
     setMessage("Link copiado.");
   }
 
+  function goToPreviousWeek() {
+    const current = new Date(`${calendarWeekStart}T00:00:00`);
+    current.setDate(current.getDate() - 7);
+    setCalendarWeekStart(current.toISOString().slice(0, 10));
+  }
+
+  function goToNextWeek() {
+    const current = new Date(`${calendarWeekStart}T00:00:00`);
+    current.setDate(current.getDate() + 7);
+    setCalendarWeekStart(current.toISOString().slice(0, 10));
+  }
+
+  function goToCurrentWeek() {
+    setCalendarWeekStart(startOfWeek().toISOString().slice(0, 10));
+  }
+
+  function goToTaskWeek(dueDate: string) {
+    setCalendarWeekStart(startOfWeek(new Date(`${dueDate}T00:00:00`)).toISOString().slice(0, 10));
+    setScreen("calendar");
+  }
+
   async function loadAdminRows() {
     if (localMode || !session?.access_token) {
       setIsAdmin(false);
@@ -1602,34 +1677,108 @@ export function ClassBoardApp() {
                 )}
 
                 {workspace && accessGranted && screen === "calendar" && (
-                  <Panel title="Calendário">
-                    <div className="grid gap-4 md:grid-cols-5">
-                      {weeklyCalendar.map((day) => (
-                        <div key={day.iso} className="min-h-[200px] rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="font-semibold uppercase text-slate-900">{day.dayLabel}</p>
-                              <p className="text-sm text-slate-500">{formatDate(day.iso)}</p>
-                            </div>
-                            <CalendarDays className="h-5 w-5 text-slate-400" />
-                          </div>
-                          <div className="mt-5 space-y-3">
-                            {day.items.length ? day.items.map((task) => (
-                              <button
-                                key={task.id}
-                                type="button"
-                                onClick={() => openEditTask(task)}
-                                className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
-                              >
-                                <p className="font-medium text-slate-900">{task.title}</p>
-                                <p className="mt-1 text-sm text-slate-500">{task.subject}</p>
-                              </button>
-                            )) : <EmptyState text="Sem itens." compact />}
-                          </div>
+                  <div className="space-y-5">
+                    <Panel title="Calendário">
+                      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <p className="text-sm text-slate-500">Semana exibida</p>
+                          <p className="text-lg font-semibold text-slate-900">{weekRangeLabel(calendarWeekStart)}</p>
                         </div>
-                      ))}
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={goToPreviousWeek}
+                            className="inline-flex h-11 items-center justify-center rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                          >
+                            Semana anterior
+                          </button>
+                          <button
+                            type="button"
+                            onClick={goToCurrentWeek}
+                            className="inline-flex h-11 items-center justify-center rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                          >
+                            Semana atual
+                          </button>
+                          <button
+                            type="button"
+                            onClick={goToNextWeek}
+                            className="inline-flex h-11 items-center justify-center rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                          >
+                            Próxima semana
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
+                        {weeklyCalendar.map((day) => (
+                          <div key={day.iso} className="min-h-[220px] rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="font-semibold uppercase text-slate-900">{day.dayLabel}</p>
+                                <p className="text-sm text-slate-500">{formatDate(day.iso)}</p>
+                              </div>
+                              <CalendarDays className="h-5 w-5 text-slate-400" />
+                            </div>
+                            <div className="mt-5 space-y-3">
+                              {day.items.length ? day.items.map((task) => (
+                                <button
+                                  key={task.id}
+                                  type="button"
+                                  onClick={() => openEditTask(task)}
+                                  className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
+                                >
+                                  <p className="font-medium text-slate-900">{task.title}</p>
+                                  <p className="mt-1 text-sm text-slate-500">{task.subject}</p>
+                                </button>
+                              )) : <EmptyState text="Sem tarefas." compact />}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Panel>
+
+                    <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+                      <Panel title="Tarefas da semana exibida">
+                        <div className="space-y-3">
+                          {calendarVisibleTasks.length ? calendarVisibleTasks.map((task) => (
+                            <button
+                              key={`${task.id}-${task.calendarDate}`}
+                              type="button"
+                              onClick={() => openEditTask(task)}
+                              className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-4 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
+                            >
+                              <div>
+                                <p className="font-semibold text-slate-900">{task.title}</p>
+                                <p className="mt-1 text-sm text-slate-500">{task.subject} • {formatDate(task.due_date)}</p>
+                              </div>
+                              <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>
+                                {humanDueLabel(task.due_date)}
+                              </span>
+                            </button>
+                          )) : <EmptyState text="Nenhuma tarefa nesta semana. Use os botões acima para navegar entre as semanas." />}
+                        </div>
+                      </Panel>
+
+                      <Panel title="Próximas tarefas agendadas">
+                        <div className="space-y-3">
+                          {upcomingCalendarTasks.length ? upcomingCalendarTasks.map((task) => (
+                            <button
+                              key={task.id}
+                              type="button"
+                              onClick={() => goToTaskWeek(task.due_date)}
+                              className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-4 text-left transition hover:border-brand-200 hover:bg-brand-50/30"
+                            >
+                              <div>
+                                <p className="font-semibold text-slate-900">{task.title}</p>
+                                <p className="mt-1 text-sm text-slate-500">{task.subject} • {formatDate(task.due_date)}</p>
+                              </div>
+                              <span className="text-sm font-medium text-brand-700">Ver semana</span>
+                            </button>
+                          )) : <EmptyState text="Nenhuma tarefa agendada." compact />}
+                        </div>
+                      </Panel>
                     </div>
-                  </Panel>
+                  </div>
                 )}
 
                 {screen === "workspace" && (
@@ -1659,7 +1808,7 @@ export function ClassBoardApp() {
                           <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                             <p className="text-sm font-semibold text-slate-900">Plano padrão da conta</p>
                             <p className="mt-2 text-sm text-slate-600">
-                              Toda conta nova começa com o <strong>Individual Gratuito</strong>. Para migrar para Grupo ou Turma, use a área de planos ou fale com o proprietário.
+                              Toda conta nova começa com o <strong>Individual Gratuito</strong>. Para migrar para Grupo ou Turma, use a área de planos ou fale com o proprietário do site.
                             </p>
                           </div>
                           <div className="flex justify-end">
@@ -1716,7 +1865,7 @@ export function ClassBoardApp() {
                             {members.length ? members.map((member) => (
                               <div key={member.id} className="rounded-2xl border border-slate-200 px-4 py-3">
                                 <p className="font-medium text-slate-900">{member.profile?.full_name || member.profile?.email || "Usuário"}</p>
-                                <p className="text-sm text-slate-500">{member.profile?.email || "Sem email"} • {member.role}</p>
+                                <p className="text-sm text-slate-500">{member.profile?.email || "Sem e-mail"} • {memberRoleLabel(member.role)}</p>
                               </div>
                             )) : <EmptyState text="Sem membros." compact />}
                           </div>
@@ -1757,7 +1906,7 @@ export function ClassBoardApp() {
                                 {groups.length ? groups.map((group) => (
                                   <div key={group.id} className="rounded-2xl border border-slate-200 px-4 py-4">
                                     <p className="font-semibold text-slate-900">{group.name}</p>
-                                    <p className="mt-1 text-sm text-slate-500">{group.description || "Sem descrição"}</p>
+                                    <p className="mt-1 text-sm text-slate-500">{group.description || "Sem descrição."}</p>
                                   </div>
                                 )) : <EmptyState text="Nenhum grupo criado." />}
                               </div>
@@ -1771,14 +1920,14 @@ export function ClassBoardApp() {
 
                 {isAdmin && screen === "admin" && (
                   <div className="space-y-5">
-                    <Panel title="Painel admin">
+                    <Panel title="Painel administrativo">
                       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                         <div className="relative w-full lg:max-w-md">
                           <Search className="absolute left-4 top-3.5 h-4 w-4 text-slate-400" />
                           <input
                             value={adminSearch}
                             onChange={(e) => setAdminSearch(e.target.value)}
-                            placeholder="Buscar por email, nome ou workspace"
+                            placeholder="Buscar por e-mail, nome ou espaço"
                             className="h-12 w-full rounded-2xl border border-slate-200 pl-11 pr-4"
                           />
                         </div>
@@ -1793,7 +1942,7 @@ export function ClassBoardApp() {
 
                       {adminLoading ? (
                         <div className="flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-4 text-slate-600">
-                          <Loader2 className="h-4 w-4 animate-spin" /> Carregando painel admin...
+                          <Loader2 className="h-4 w-4 animate-spin" /> Carregando painel administrativo...
                         </div>
                       ) : (
                         <div className="space-y-4">
@@ -1802,9 +1951,9 @@ export function ClassBoardApp() {
                               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                                 <div>
                                   <p className="text-lg font-semibold text-slate-900">{row.workspace.name}</p>
-                                  <p className="text-sm text-slate-500">{row.ownerProfile?.email || "Sem email"}</p>
-                                  <p className="mt-1 text-sm text-slate-500">{row.workspace.school_name || "Sem escola"} • {row.memberCount} membro(s)</p>
-                                  <p className="mt-1 text-sm text-slate-500">Plano: {PLAN_DEFINITIONS[row.plan?.plan_code ?? "individual_free"].title} • Status: {row.plan?.status ?? "sem registro"}</p>
+                                  <p className="text-sm text-slate-500">{row.ownerProfile?.email || "Sem e-mail"}</p>
+                                  <p className="mt-1 text-sm text-slate-500">{row.workspace.school_name || "Sem escola informada"} • {row.memberCount} membro(s)</p>
+                                  <p className="mt-1 text-sm text-slate-500">Plano: {PLAN_DEFINITIONS[row.plan?.plan_code ?? "individual_free"].title} • Status: {planStatusLabel(row.plan?.status ?? null)}</p>
                                 </div>
                                 <div className="grid gap-2 sm:grid-cols-3">
                                   {PLAN_ORDER.map((planCode) => (
@@ -1837,7 +1986,7 @@ export function ClassBoardApp() {
                                 </div>
                               </div>
                             </div>
-                          )) : <EmptyState text="Nenhum workspace encontrado." />}
+                          )) : <EmptyState text="Nenhum espaço encontrado." />}
                         </div>
                       )}
                     </Panel>
@@ -1957,7 +2106,7 @@ function PlansScreen({
             <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
               <p className="text-sm font-medium text-slate-500">Como pedir mudança de plano</p>
               <p className="mt-2 text-sm text-slate-600">
-                Selecione o plano desejado acima e fale com o proprietário para liberar manualmente no painel admin.
+                Selecione o plano desejado acima e fale com o proprietário para liberar manualmente no painel administrativo.
               </p>
               <p className="mt-2 text-sm text-slate-600">
                 {workspace
@@ -1982,7 +2131,7 @@ function PlansScreen({
           <InfoCard title="Regras do produto" icon={<AlertCircle className="h-5 w-5 text-brand-600" />}>
             <ul className="space-y-2 text-sm text-slate-600">
               <li>• Toda conta nova começa no Individual Gratuito.</li>
-              <li>• Grupo e Turma são liberados manualmente pelo admin.</li>
+              <li>• Grupo e Turma são liberados manualmente pelo administrador.</li>
               <li>• O login continua limpo; planos ficam nesta área separada.</li>
             </ul>
           </InfoCard>
@@ -2133,7 +2282,7 @@ function TaskCard({
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="mb-3 flex flex-wrap gap-2">
-            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapPriority(task.priority)}`}>{task.priority}</span>
+            <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapPriority(task.priority)}`}>{priorityLabel(task.priority)}</span>
             <span className={`rounded-xl border px-3 py-1 text-sm font-medium ${mapUrgency(task.due_date)}`}>{humanDueLabel(task.due_date)}</span>
             <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-700">{statusLabel(task.status)}</span>
             {groupName ? <span className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-1 text-sm font-medium text-sky-700">{groupName}</span> : null}
